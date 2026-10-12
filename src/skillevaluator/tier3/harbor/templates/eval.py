@@ -428,8 +428,8 @@ def get_agent_text(traj):
     parts = []
     for step in traj.get("steps", []):
         if step.get("source") == "agent":
-            msg = step.get("message") or ""
-            if isinstance(msg, str) and msg.strip():
+            msg = atif_content_text(step.get("message"))
+            if msg.strip():
                 parts.append(msg)
     return "\n".join(parts)
 
@@ -472,8 +472,8 @@ def build_conversation_summary(traj, question):
             content = atif_content_text(r.get("content"))
             if content:
                 parts.append(f"Tool returned: {content[:400]}")
-        msg = step.get("message") or ""
-        if msg and isinstance(msg, str) and msg.strip() and not step.get("tool_calls"):
+        msg = atif_content_text(step.get("message"))
+        if msg.strip() and not step.get("tool_calls"):
             parts.append(f"Agent: {msg[:1500]}")
     return "\n".join(parts)
 
@@ -534,8 +534,8 @@ _TOOL_NAME_SEPARATORS = (".", ":", "/", "__")
 def _get_final_response(traj):
     for step in reversed(traj.get("steps", [])):
         if step.get("source") == "agent":
-            msg = step.get("message") or ""
-            if isinstance(msg, str) and msg.strip():
+            msg = atif_content_text(step.get("message"))
+            if msg.strip():
                 return msg
     return ""
 
@@ -797,8 +797,8 @@ def _final_response_ref(traj):
         step = steps[step_idx]
         if step.get("source") != "agent":
             continue
-        msg = step.get("message") or ""
-        if isinstance(msg, str) and msg.strip():
+        msg = atif_content_text(step.get("message"))
+        if msg.strip():
             return [
                 _evidence_ref(
                     source="trajectory.json",
