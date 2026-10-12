@@ -102,6 +102,16 @@ def test_missing_scanner_is_incomplete(tmp_path, monkeypatch):
     assert not calls
 
 
+@pytest.mark.parametrize("fields", [{"aliases": [{"cvss": None}]}, {"severity": []}, {"fix_versions": [None]}])
+def test_invalid_advisory_fields_are_incomplete(tmp_path, monkeypatch, fields):
+    output = json.dumps(
+        {"dependencies": [{"name": "idna", "version": "3.10", "vulns": [{"id": "PYSEC-TEST", **fields}]}]}
+    )
+    result, _ = audit(tmp_path, '[project]\ndependencies=["idna==3.10"]', monkeypatch, output=output, exit_code=1)
+    assert result.status == "incomplete"
+    assert result.metadata["dependency_coverage"]["audited_pins"] == []
+
+
 def test_vulnerable_target_preserves_findings(tmp_path, monkeypatch):
     output = json.dumps(
         {

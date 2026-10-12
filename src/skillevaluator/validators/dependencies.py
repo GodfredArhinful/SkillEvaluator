@@ -224,6 +224,7 @@ class DependencySecurityValidator(ValidatorBase):
                     or any(not isinstance(version, str) for version in vuln.get("fix_versions", []))
                     or ("severity" in vuln and not isinstance(vuln["severity"], str))
                     or not isinstance(vuln.get("aliases", []), list)
+                    or any(not isinstance(alias, str) for alias in vuln.get("aliases", []))
                     for vuln in dep["vulns"]
                 ):
                     raise ValueError("invalid advisory")
