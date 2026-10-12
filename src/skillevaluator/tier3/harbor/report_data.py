@@ -792,7 +792,9 @@ def load_agent_data(
                         reward["entry_id"] = trial_dir.name.split("__", 1)[0] if trial_dir.name else "unknown"
                     result_file = trial_dir / "result.json"
                     if result_file.exists():
-                        trial_result = _load_bounded_json(result_file, agent_diagnostics, artifact="trial_result")
+                        # Timing is optional telemetry. A malformed/oversized timing
+                        # source makes resources unavailable, not score evidence truncated.
+                        trial_result = _load_bounded_json(result_file, [], artifact="trial_result")
                         if isinstance(trial_result, dict):
                             seconds = agent_execution_seconds(trial_result)
                             if seconds is not None:

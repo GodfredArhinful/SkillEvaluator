@@ -789,16 +789,14 @@ def judge_accuracy(
     if not ground_truth:
         return {"score": 1.0, "reason": "No ground_truth -- skipped"}
 
-    prompt = ACCURACY_PROMPT.format(
-        question=question,
-        ground_truth=ground_truth,
-        agent_text=agent_text,
-    )
+    prompt = ACCURACY_PROMPT
     if not skill_identification_applicable:
         prompt = prompt.replace(
             "1. SKILL_IDENTIFIED: Does the response reference or use the correct skill for the task?",
             "1. SKILL_IDENTIFIED: Inapplicable: no skill is expected. Set false; exclude it from the score.",
         ).replace("Compute score = count(true) / 5.", "Compute score = count(true among the other four criteria) / 4.")
+    # Adjust the rubric before interpolation so task/evidence text stays intact.
+    prompt = prompt.format(question=question, ground_truth=ground_truth, agent_text=agent_text)
 
     def validate_payload(parsed: Any) -> str | None:
         error = _accuracy_payload_error(parsed)

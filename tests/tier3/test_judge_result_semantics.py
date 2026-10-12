@@ -78,6 +78,17 @@ def test_negative_accuracy_requires_criterion_evidence(module, monkeypatch):
     assert result["status"] == "error"
 
 
+@pytest.mark.parametrize("module", [llm_judge, eval_template])
+def test_negative_rubric_does_not_rewrite_supplied_evidence(module, monkeypatch):
+    calls = []
+    criteria = dict.fromkeys(_CRITERIA, True)
+    response = json.dumps({"criteria": criteria, "score": 1.0, "reason": "valid"})
+    monkeypatch.setattr(module, "call_public_llm", _pair_script([(response, None)], calls))
+    evidence = 'Evidence literal: Compute score = count(true) / 5. "SKILL_IDENTIFIED": true, "score": 0.8'
+    module.judge_accuracy("question", "answer", evidence, skill_identification_applicable=False)
+    assert evidence in calls[0]
+
+
 @pytest.fixture(params=["shared", "template"])
 def judge_module(request: pytest.FixtureRequest) -> ModuleType:
     return llm_judge if request.param == "shared" else eval_template

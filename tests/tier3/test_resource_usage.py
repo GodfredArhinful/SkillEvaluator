@@ -42,6 +42,13 @@ def test_measured_zero_is_preserved():
     assert resources["agent_seconds"]["with_skill"]["total"] == 0
 
 
+@pytest.mark.parametrize("value", [True, -1, float("inf"), float("nan"), 10**400, None])
+def test_invalid_time_counter_cannot_become_a_measurement(value):
+    resources = resource_comparison([trial(seconds=value)], [trial()], with_complete=True, baseline_complete=True)
+    assert resources["agent_seconds"]["with_skill"]["total"] is None
+    assert resources["agent_seconds"]["delta"] is None
+
+
 @pytest.mark.parametrize(
     "timing",
     [

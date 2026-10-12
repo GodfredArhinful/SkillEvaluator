@@ -8119,7 +8119,7 @@ BEHAVIOR_CHECK_JSON_SCHEMA = {
 def judge_accuracy(question, ground_truth, agent_text, *, skill_identification_applicable=True):
     if not ground_truth:
         return {"score": 1.0, "reason": "No ground_truth -- skipped"}
-    prompt = f"""You are an expert evaluator for AI agent responses. Evaluate by checking \
+    prompt = """You are an expert evaluator for AI agent responses. Evaluate by checking \
 each criterion below against the expected answer. For each criterion, determine true (satisfied) or false (not satisfied).
 
 1. SKILL_IDENTIFIED: Does the response reference or use the correct skill for the task?
@@ -8151,6 +8151,8 @@ SELECTED EVIDENCE (final response + produced artifacts; low-relevance steps may 
         prompt = prompt.replace('"SKILL_IDENTIFIED": true', '"SKILL_IDENTIFIED": false').replace(
             '"score": 0.8', '"score": 1.0'
         )
+    # Adjust the rubric before interpolation so task/evidence text stays intact.
+    prompt = prompt.format(question=question, ground_truth=ground_truth, agent_text=agent_text)
 
     def validate_payload(parsed):
         error = _accuracy_payload_error(parsed)
