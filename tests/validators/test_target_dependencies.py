@@ -40,6 +40,7 @@ def test_audits_target_pins_and_optional_groups(tmp_path, monkeypatch):
     )
     assert result.status == "passed"
     assert calls == ["Requests==2.32.5", "idna==3.10"]
+    assert result.metadata["dependency_coverage"]["audited_pins"] == calls
     assert result.metadata["dependency_coverage"]["transitive_dependencies"] == "not audited"
 
 
@@ -91,6 +92,8 @@ def test_failed_or_incomplete_inventory_is_incomplete(tmp_path, monkeypatch, out
         tmp_path, '[project]\ndependencies=["idna==3.10"]', monkeypatch, output=output, exit_code=exit_code
     )
     assert result.status == "incomplete"
+    assert result.metadata["dependency_coverage"]["requested_pins"] == ["idna==3.10"]
+    assert result.metadata["dependency_coverage"]["audited_pins"] == []
 
 
 def test_missing_scanner_is_incomplete(tmp_path, monkeypatch):

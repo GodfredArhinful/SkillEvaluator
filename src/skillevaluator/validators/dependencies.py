@@ -175,7 +175,8 @@ class DependencySecurityValidator(ValidatorBase):
             "source": "pyproject.toml",
             "scope": "direct declared pins (all optional groups), scanner-platform markers",
             "declarations": declaration_count,
-            "audited_pins": sorted(pins),
+            "requested_pins": sorted(pins),
+            "audited_pins": [],
             "transitive_dependencies": "not audited",
         }
         if not pins:
@@ -239,6 +240,7 @@ class DependencySecurityValidator(ValidatorBase):
             incomplete("pip-audit returned incomplete or invalid target evidence")
             return result
         self._process_pip_audit(tool_result.stdout, result, pyproject.name)
+        result.metadata["dependency_coverage"]["audited_pins"] = sorted(pins)
 
         return result
 
