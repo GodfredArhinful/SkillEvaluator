@@ -6,6 +6,9 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Fixed
 
+- Preserve Claude tool-result failure flags in native and reconstructed ATIF
+  trajectories. Failed SKILL.md reads no longer receive activation, workflow,
+  or routing credit in either the host grader or the Harbor verifier.
 - Brought the published documentation in line with 0.5.0. It now covers how
   standard grading builds judge evidence and rebuilds trajectories from
   OpenCode and Codex logs, structured judge output and retries, the evidence
