@@ -6,6 +6,9 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Fixed
 
+- Preserve scored Harbor trials when agent answers mention authentication errors
+  and per-step token usage is present but aggregate ATIF token metrics are absent
+  or zero. Explicit runtime exceptions and error events still invalidate trials.
 - Brought the published documentation in line with 0.5.0. It now covers how
   standard grading builds judge evidence and rebuilds trajectories from
   OpenCode and Codex logs, structured judge output and retries, the evidence
