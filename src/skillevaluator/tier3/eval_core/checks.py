@@ -2018,7 +2018,7 @@ def check_activation(
                 }
 
     # Check 2: read_file / read with SKILL.md in path
-    read_calls = [tc for tc in tool_calls if "read" in tc["action"].lower()]
+    read_calls = [tc for tc in tool_calls if "read" in tc["action"].lower() and tc.get("is_error") is not True]
     for call in read_calls:
         path_arg = _extract_path(call)
         if "SKILL.md" not in path_arg:
@@ -2037,7 +2037,7 @@ def check_activation(
             }
 
     # Check 3: shell read of SKILL.md (cat/sed/head/...)
-    exec_calls = [tc for tc in tool_calls if _is_execution_action(str(tc["action"]))]
+    exec_calls = [tc for tc in tool_calls if _is_execution_action(str(tc["action"])) and tc.get("is_error") is not True]
     for call in exec_calls:
         cmd = _command_text(call)
         if _cmd_reads_skill_md(cmd):
@@ -2073,7 +2073,7 @@ def check_activation(
         has_skill_read_evidence = ("read" in action.lower() and "SKILL.md" in str(tc.get("action_input", ""))) or (
             _is_execution_action(action) and _cmd_reads_skill_md(cmd)
         )
-        if not has_skill_read_evidence:
+        if not has_skill_read_evidence or tc.get("is_error") is True:
             continue
         obs = str(tc.get("observation", "")).lower()
         if "skill.md" in obs:
@@ -5107,7 +5107,8 @@ def check_workflow_order(
         cmd = _command_text(call)
 
         if ("read" in action and "SKILL.md" in args_str) or (_is_execution_action(action) and _cmd_reads_skill_md(cmd)):
-            sequence.append("read_skill")
+            if call.get("is_error") is not True:
+                sequence.append("read_skill")
         elif _is_execution_action(action) and cmd and "--help" not in cmd and "which " not in cmd:
             sequence.append("execution")
 
@@ -5365,7 +5366,7 @@ def check_routing(
 ) -> dict[str, Any]:
     """Check the agent read only expected/allowed workspace skill docs."""
     unsupported_native_codex_call = _has_unsupported_native_codex_call(tool_calls)
-    read_calls = [tc for tc in tool_calls if "read" in tc["action"].lower()]
+    read_calls = [tc for tc in tool_calls if "read" in tc["action"].lower() and tc.get("is_error") is not True]
 
     skills_read: list[str] = []
     wrong_skills: list[str] = []
@@ -5398,7 +5399,7 @@ def check_routing(
     for call in tool_calls:
         action = call["action"].lower()
         cmd = _command_text(call)
-        if not (_is_execution_action(action) and _cmd_reads_skill_md(cmd)):
+        if call.get("is_error") is True or not (_is_execution_action(action) and _cmd_reads_skill_md(cmd)):
             continue
 
         skills_read.append(cmd)

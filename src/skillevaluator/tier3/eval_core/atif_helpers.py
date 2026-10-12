@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from skillevaluator.evidence import evidence_ref_identity
-from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import atif_content_text
+from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import atif_content_text, normalized_tool_call_is_error
 from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import (
     iter_normalized_tool_calls as iter_tool_calls,
 )
@@ -1053,6 +1053,8 @@ def extract_tool_calls_as_dicts(traj: dict[str, Any]) -> list[dict[str, Any]]:
                 "action_input": tc.get("arguments") or {},
                 "observation": _tool_call_observation(step, tc),
             }
+            if normalized_tool_call_is_error(step, tc):
+                call["is_error"] = True
             if status := tc.get("_atif_normalization_status"):
                 call["normalization_status"] = status
             if status := tc.get("_atif_observation_status"):
