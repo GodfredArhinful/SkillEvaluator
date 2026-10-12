@@ -6,6 +6,9 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Fixed
 
+- Include schema-valid ATIF message content parts in final answers, conversation
+  summaries, and judge evidence references in the host and Harbor verifier.
+  Image and audio parts use markers without exposing their source paths.
 - Brought the published documentation in line with 0.5.0. It now covers how
   standard grading builds judge evidence and rebuilds trajectories from
   OpenCode and Codex logs, structured judge output and retries, the evidence
