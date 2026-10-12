@@ -98,8 +98,8 @@ def get_agent_text(traj: dict[str, Any]) -> str:
     parts: list[str] = []
     for step in traj.get("steps", []):
         if step.get("source") == "agent":
-            msg = step.get("message") or ""
-            if isinstance(msg, str) and msg.strip():
+            msg = atif_content_text(step.get("message"))
+            if msg.strip():
                 parts.append(msg)
     return "\n".join(parts)
 
@@ -108,8 +108,8 @@ def get_final_response(traj: dict[str, Any]) -> str:
     """Get the last non-empty agent message from the trajectory."""
     for step in reversed(traj.get("steps", [])):
         if step.get("source") == "agent":
-            msg = step.get("message") or ""
-            if isinstance(msg, str) and msg.strip():
+            msg = atif_content_text(step.get("message"))
+            if msg.strip():
                 return msg
     return ""
 
@@ -153,8 +153,8 @@ def build_conversation_summary(traj: dict[str, Any], question: str) -> str:
             if content:
                 parts.append(f"Tool returned: {content[:400]}")
 
-        msg = step.get("message") or ""
-        if msg and isinstance(msg, str) and msg.strip() and not step.get("tool_calls"):
+        msg = atif_content_text(step.get("message"))
+        if msg.strip() and not step.get("tool_calls"):
             parts.append(f"Agent: {msg[:1500]}")
 
     final = get_final_response(traj)
@@ -502,8 +502,8 @@ def _final_response_ref(traj: dict[str, Any]) -> list[dict[str, Any]]:
         step = steps[step_idx]
         if step.get("source") != "agent":
             continue
-        msg = step.get("message") or ""
-        if isinstance(msg, str) and msg.strip():
+        msg = atif_content_text(step.get("message"))
+        if msg.strip():
             return [
                 _evidence_ref(
                     source="trajectory.json",
