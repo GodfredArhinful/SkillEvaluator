@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from skillevaluator.reporting import HTMLReporter, JSONReporter
 from skillevaluator.utils.tool_runner import ToolResult, Tools
 from skillevaluator.validators.dependencies import DependencySecurityValidator
 
@@ -131,3 +132,24 @@ def test_symlink_is_not_read(tmp_path):
     link = tmp_path / "pyproject.toml"
     link.symlink_to(external)
     assert DependencySecurityValidator()._audit_pyproject(link).status == "incomplete"
+
+
+def test_folder_target_coverage_survives_report_exports(tmp_path, monkeypatch):
+    for name in ("first", "second"):
+        skill = tmp_path / name
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Control\n---\n")
+    validator = DependencySecurityValidator(use_safety=False)
+
+    def audit_target(target):
+        result, _ = audit(target, '[project]\ndependencies=["idna==3.10"]', monkeypatch)
+        return result
+
+    monkeypatch.setattr(validator, "_validate_single_skill", audit_target)
+    result = validator.validate(tmp_path)
+    coverage = result.metadata["dependency_coverage"]
+    assert {item["target"] for item in coverage} == {"first", "second"}
+    assert all(item["audited_pins"] == ["idna==3.10"] for item in coverage)
+    json_data = json.loads(JSONReporter().render_all([result]))
+    assert json_data["results"][0]["dependency_coverage"] == coverage
+    assert HTMLReporter()._results_to_dict([result])[0]["dependency_coverage"] == coverage

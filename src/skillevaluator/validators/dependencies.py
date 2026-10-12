@@ -53,11 +53,30 @@ class DependencySecurityValidator(ValidatorBase):
 
     def validate(self, skill_path: Path) -> ValidationResult:
         """Run dependency audit on skill(s) at path."""
-        return self._validate_folder_or_skill(
+        coverages = []
+
+        def audit_target(target: Path) -> ValidationResult:
+            result = self._validate_single_skill(target)
+            coverage = result.metadata.get("dependency_coverage")
+            if isinstance(coverage, dict):
+                relative_target = target.relative_to(skill_path).as_posix()
+                coverages.append({"target": relative_target, **coverage})
+                result.add_message(
+                    f"{relative_target}/pyproject.toml coverage: "
+                    f"{len(coverage['requested_pins'])} requested pin(s), "
+                    f"{len(coverage['audited_pins'])} audited pin(s); "
+                    "direct declarations only, transitive dependencies not audited"
+                )
+            return result
+
+        result = self._validate_folder_or_skill(
             skill_path,
-            self._validate_single_skill,
+            audit_target,
             action_description="Auditing dependencies for",
         )
+        if coverages:
+            result.metadata["dependency_coverage"] = coverages
+        return result
 
     def _validate_single_skill(self, skill_path: Path) -> ValidationResult:
         """Audit dependencies for a single skill directory."""
@@ -103,6 +122,14 @@ class DependencySecurityValidator(ValidatorBase):
     def _audit_pyproject(self, pyproject: Path) -> ValidationResult:
         """Audit declared pins without installing the target or running build code."""
         result = ValidationResult()
+        result.metadata["dependency_coverage"] = {
+            "source": "pyproject.toml",
+            "scope": "direct declared pins (all optional groups), scanner-platform markers",
+            "declarations": None,
+            "requested_pins": [],
+            "audited_pins": [],
+            "transitive_dependencies": "not audited",
+        }
         result.add_message(
             "Auditing pyproject.toml: direct declared pins, including optional groups; no transitive audit"
         )
@@ -171,14 +198,9 @@ class DependencySecurityValidator(ValidatorBase):
                     continue
                 pins.add(f"{requirement.name}=={specifiers[0].version}")
 
-        result.metadata["dependency_coverage"] = {
-            "source": "pyproject.toml",
-            "scope": "direct declared pins (all optional groups), scanner-platform markers",
-            "declarations": declaration_count,
-            "requested_pins": sorted(pins),
-            "audited_pins": [],
-            "transitive_dependencies": "not audited",
-        }
+        result.metadata["dependency_coverage"].update(
+            {"declarations": declaration_count, "requested_pins": sorted(pins)}
+        )
         if not pins:
             result.add_message("pyproject.toml: no applicable exact pins to audit")
             return result

@@ -304,6 +304,9 @@ For `validate`, the default set is `schema`, `version`, `security`, `pii`, `lice
     pinned `requirements.txt` for unresolved declarations. `pip-audit` is the
     primary scanner; Safety supplies secondary coverage for requirements files
     when installed separately. The audit may use network-backed vulnerability databases.
+    JSON and HTML export data retain `dependency_coverage` per target, including
+    requested and actually audited pins. Unreadable declarations have unknown
+    declaration counts and an empty audited inventory, not a completed scan.
 
     ```bash title="Opt-in dependency audit"
     skillevaluator validate ./my-skill --checks dependency
