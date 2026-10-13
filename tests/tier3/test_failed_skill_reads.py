@@ -102,6 +102,58 @@ def test_failed_read_does_not_satisfy_workflow_before_execution(
     assert scorer.check_routing([read, retry], "demo-skill")["score"] == 1.0
 
 
+@pytest.mark.parametrize("command", (
+    "cat /skills/demo-skill/SKILL.md && ls /skills/demo-skill/scripts/",
+    "cat /skills/demo-skill/SKILL.md /skills/demo-skill/reference.md",
+))
+def test_failed_compound_shell_read_keeps_credit(grader, command) -> None:
+    _, scorer = grader
+    read = {"action": "Bash", "action_input": {"command": command},
+            "observation": "# Demo skill", "is_error": True}
+    execute = {"action": "Bash", "action_input": {"command": "python scripts/run.py"}}
+    assert scorer.check_activation([read], "demo-skill")["score"] == 0.75
+    assert scorer.check_workflow_order([read, execute], expected_skill="demo-skill")["score"] == 1.0
+    assert scorer.check_routing([read], "demo-skill")["score"] == 1.0
+
+
+def test_failed_native_skill_call_is_not_activation(grader) -> None:
+    extractor, scorer = grader
+    trajectory = {
+        "steps": [{
+            "source": "agent", "message": "",
+            "tool_calls": [{"tool_call_id": "s1", "function_name": "Skill",
+                            "arguments": {"skill": "demo-skill"}}],
+            "observation": {"results": [{
+                "source_call_id": "s1", "content": "Skill not found",
+                "extra": {"tool_result_is_error": True},
+            }]},
+        }]
+    }
+    calls = extractor.extract_tool_calls_as_dicts(trajectory)
+    assert extractor.get_skill_tool_calls(trajectory) == []
+    assert scorer.check_activation(calls, "demo-skill", skill_tool_names=[])["score"] == 0.0
+    assert scorer.check_workflow_order(calls, skill_tool_names=[], expected_skill="demo-skill")["score"] == 0.0
+    assert scorer.check_routing(calls, "demo-skill", skill_tool_names=[])["score"] == 0.0
+
+
+def test_opencode_failed_read_is_marked_as_error(grader) -> None:
+    from skillevaluator.tier3.eval_core.log_converters import synthetic_trajectory_from_opencode_json
+    extractor, scorer = grader
+    event = {"type": "tool_use", "part": {
+        "tool": "read", "callID": "failed", "state": {
+            "status": "error",
+            "input": {"filePath": "/skills/demo-skill/SKILL.md"},
+            "error": {"message": "File not found"},
+        },
+    }}
+    trajectory = synthetic_trajectory_from_opencode_json(json.dumps(event))
+    assert trajectory is not None
+    calls = extractor.extract_tool_calls_as_dicts(trajectory)
+    assert calls[0]["is_error"] is True
+    assert scorer.check_activation(calls, "demo-skill")["score"] == 0.0
+    assert scorer.check_routing(calls, "demo-skill")["score"] == 0.0
+
+
 def test_native_atif_error_is_matched_to_its_own_call(grader: tuple[ModuleType, ModuleType]) -> None:
     from harbor.models.trajectories.trajectory import Trajectory
 

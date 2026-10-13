@@ -565,13 +565,12 @@ def synthetic_trajectory_from_opencode_json(text: str) -> dict[str, Any] | None:
             "observation": {"results": []},
         }
         observation_text = _opencode_tool_observation(state)
-        if observation_text:
-            step["observation"]["results"].append(
-                {
-                    "source_call_id": call_id,
-                    "content": observation_text,
-                }
-            )
+        failed_read = status == "error" and function_name.lower() in {"read", "read_file"}
+        if observation_text or failed_read:
+            result = {"source_call_id": call_id, "content": observation_text}
+            if failed_read:
+                result["extra"] = {"tool_result_is_error": True}
+            step["observation"]["results"].append(result)
         steps.append(step)
 
     if not saw_content or not steps:

@@ -53,11 +53,15 @@ def get_all_tool_calls(traj: dict[str, Any]) -> list[dict[str, Any]]:
 def get_skill_tool_calls(traj: dict[str, Any]) -> list[str]:
     """Get skill names from Claude Code's native ``Skill`` tool invocations."""
     skills: list[str] = []
-    for tc in get_all_tool_calls(traj):
-        if tc["fn"].lower() == "skill":
-            name = tc["args"].get("skill", tc["args"].get("name", ""))
-            if name:
-                skills.append(str(name))
+    for step, tc in iter_tool_calls(traj):
+        if (tc.get("function_name") or "").lower() != "skill":
+            continue
+        if normalized_tool_call_is_error(step, tc):
+            continue
+        args = tc.get("arguments") or {}
+        name = args.get("skill", args.get("name", ""))
+        if name:
+            skills.append(str(name))
     return skills
 
 

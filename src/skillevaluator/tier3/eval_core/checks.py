@@ -640,6 +640,24 @@ def _command_reads_skill_md_arg(command: list[str], cmd_idx: int, assignments: d
     return False
 
 
+def _failed_single_skill_read(call):
+    """A shell failure only proves the skill read failed for an isolated read.
+
+    Compound commands and multi-file reads may print SKILL.md successfully
+    before an unrelated operation fails.
+    """
+    if call.get("is_error") is not True:
+        return False
+    tokens = _shell_tokens(_command_text(call))
+    if not tokens or any(token in _SHELL_SEPARATORS for token in tokens):
+        return False
+    command = tokens[0].rsplit("/", 1)[-1].lower()
+    if command not in {"cat", "nl", "bat", "less", "more"}:
+        return False
+    files = [arg for arg in tokens[1:] if not arg.startswith("-")]
+    return len(files) == 1 and _skill_md_arg(files[0], {})
+
+
 def _cmd_reads_skill_md(cmd) -> bool:
     """True if a shell command reads a SKILL.md via a file-view utility.
 
@@ -2037,7 +2055,7 @@ def check_activation(
             }
 
     # Check 3: shell read of SKILL.md (cat/sed/head/...)
-    exec_calls = [tc for tc in tool_calls if _is_execution_action(str(tc["action"])) and tc.get("is_error") is not True]
+    exec_calls = [tc for tc in tool_calls if _is_execution_action(str(tc["action"])) and not _failed_single_skill_read(tc)]
     for call in exec_calls:
         cmd = _command_text(call)
         if _cmd_reads_skill_md(cmd):
@@ -2073,7 +2091,10 @@ def check_activation(
         has_skill_read_evidence = ("read" in action.lower() and "SKILL.md" in str(tc.get("action_input", ""))) or (
             _is_execution_action(action) and _cmd_reads_skill_md(cmd)
         )
-        if not has_skill_read_evidence or tc.get("is_error") is True:
+        if not has_skill_read_evidence or (
+            tc.get("is_error") is True
+            and (not _is_execution_action(action) or _failed_single_skill_read(tc))
+        ):
             continue
         obs = str(tc.get("observation", "")).lower()
         if "skill.md" in obs:
@@ -5107,7 +5128,9 @@ def check_workflow_order(
         cmd = _command_text(call)
 
         if ("read" in action and "SKILL.md" in args_str) or (_is_execution_action(action) and _cmd_reads_skill_md(cmd)):
-            if call.get("is_error") is not True:
+            if call.get("is_error") is not True or (
+                _is_execution_action(action) and not _failed_single_skill_read(call)
+            ):
                 sequence.append("read_skill")
         elif _is_execution_action(action) and cmd and "--help" not in cmd and "which " not in cmd:
             sequence.append("execution")
@@ -5399,7 +5422,7 @@ def check_routing(
     for call in tool_calls:
         action = call["action"].lower()
         cmd = _command_text(call)
-        if call.get("is_error") is True or not (_is_execution_action(action) and _cmd_reads_skill_md(cmd)):
+        if not (_is_execution_action(action) and _cmd_reads_skill_md(cmd)) or _failed_single_skill_read(call):
             continue
 
         skills_read.append(cmd)
