@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
+from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -21,7 +24,7 @@ def grader(request: pytest.FixtureRequest, harbor_eval_template: ModuleType) -> 
     return harbor_eval_template, harbor_eval_template
 
 
-def _claude_read(*, is_error: bool, content: str) -> dict:
+def _claude_tool_result(*, name: str, arguments: dict, is_error: bool, content: str) -> dict:
     events = [
         {
             "type": "assistant",
@@ -30,8 +33,8 @@ def _claude_read(*, is_error: bool, content: str) -> dict:
                     {
                         "type": "tool_use",
                         "id": "read-1",
-                        "name": "Read",
-                        "input": {"file_path": "/skills/demo-skill/SKILL.md"},
+                        "name": name,
+                        "input": arguments,
                     }
                 ]
             },
@@ -53,6 +56,15 @@ def _claude_read(*, is_error: bool, content: str) -> dict:
     trajectory = synthetic_trajectory_from_claude_stream_jsonl("\n".join(json.dumps(event) for event in events))
     assert trajectory is not None
     return trajectory
+
+
+def _claude_read(*, is_error: bool, content: str) -> dict:
+    return _claude_tool_result(
+        name="Read",
+        arguments={"file_path": "/skills/demo-skill/SKILL.md"},
+        is_error=is_error,
+        content=content,
+    )
 
 
 def test_claude_failed_read_cannot_receive_perfect_execution_credit(grader: tuple[ModuleType, ModuleType]) -> None:
@@ -102,14 +114,17 @@ def test_failed_read_does_not_satisfy_workflow_before_execution(
     assert scorer.check_routing([read, retry], "demo-skill")["score"] == 1.0
 
 
-@pytest.mark.parametrize("command", (
-    "cat /skills/demo-skill/SKILL.md && ls /skills/demo-skill/scripts/",
-    "cat /skills/demo-skill/SKILL.md /skills/demo-skill/reference.md",
-))
+@pytest.mark.parametrize(
+    "command",
+    (
+        "cat /skills/demo-skill/SKILL.md && ls /skills/demo-skill/scripts/",
+        "cat /skills/demo-skill/SKILL.md /skills/demo-skill/reference.md",
+        "cat /skills/demo-skill/SKILL.md -",
+    ),
+)
 def test_failed_compound_shell_read_keeps_credit(grader, command) -> None:
     _, scorer = grader
-    read = {"action": "Bash", "action_input": {"command": command},
-            "observation": "# Demo skill", "is_error": True}
+    read = {"action": "Bash", "action_input": {"command": command}, "observation": "# Demo skill", "is_error": True}
     execute = {"action": "Bash", "action_input": {"command": "python scripts/run.py"}}
     assert scorer.check_activation([read], "demo-skill")["score"] == 0.75
     assert scorer.check_workflow_order([read, execute], expected_skill="demo-skill")["score"] == 1.0
@@ -119,15 +134,22 @@ def test_failed_compound_shell_read_keeps_credit(grader, command) -> None:
 def test_failed_native_skill_call_is_not_activation(grader) -> None:
     extractor, scorer = grader
     trajectory = {
-        "steps": [{
-            "source": "agent", "message": "",
-            "tool_calls": [{"tool_call_id": "s1", "function_name": "Skill",
-                            "arguments": {"skill": "demo-skill"}}],
-            "observation": {"results": [{
-                "source_call_id": "s1", "content": "Skill not found",
-                "extra": {"tool_result_is_error": True},
-            }]},
-        }]
+        "steps": [
+            {
+                "source": "agent",
+                "message": "",
+                "tool_calls": [{"tool_call_id": "s1", "function_name": "Skill", "arguments": {"skill": "demo-skill"}}],
+                "observation": {
+                    "results": [
+                        {
+                            "source_call_id": "s1",
+                            "content": "Skill not found",
+                            "extra": {"tool_result_is_error": True},
+                        }
+                    ]
+                },
+            }
+        ]
     }
     calls = extractor.extract_tool_calls_as_dicts(trajectory)
     assert extractor.get_skill_tool_calls(trajectory) == []
@@ -138,14 +160,20 @@ def test_failed_native_skill_call_is_not_activation(grader) -> None:
 
 def test_opencode_failed_read_is_marked_as_error(grader) -> None:
     from skillevaluator.tier3.eval_core.log_converters import synthetic_trajectory_from_opencode_json
+
     extractor, scorer = grader
-    event = {"type": "tool_use", "part": {
-        "tool": "read", "callID": "failed", "state": {
-            "status": "error",
-            "input": {"filePath": "/skills/demo-skill/SKILL.md"},
-            "error": {"message": "File not found"},
+    event = {
+        "type": "tool_use",
+        "part": {
+            "tool": "read",
+            "callID": "failed",
+            "state": {
+                "status": "error",
+                "input": {"filePath": "/skills/demo-skill/SKILL.md"},
+                "error": {"message": "File not found"},
+            },
         },
-    }}
+    }
     trajectory = synthetic_trajectory_from_opencode_json(json.dumps(event))
     assert trajectory is not None
     calls = extractor.extract_tool_calls_as_dicts(trajectory)
@@ -203,3 +231,99 @@ def test_native_atif_error_is_matched_to_its_own_call(grader: tuple[ModuleType, 
     assert not calls[1].get("is_error")
     assert scorer.score_skill_execution(calls, "demo-skill")["score"] == 1.0
     assert scorer.check_routing(calls, "demo-skill")["score"] == 1.0
+
+
+@pytest.mark.parametrize("action", ("Read", "Skill"))
+def test_unrelated_error_does_not_cancel_successful_skill_read(
+    grader: tuple[ModuleType, ModuleType], action: str
+) -> None:
+    from harbor.models.trajectories.trajectory import Trajectory
+
+    extractor, scorer = grader
+    trajectory = Trajectory.model_validate(
+        {
+            "schema_version": "ATIF-v1.7",
+            "agent": {"name": "claude-code", "version": "test"},
+            "steps": [
+                {
+                    "step_id": 1,
+                    "source": "agent",
+                    "message": "",
+                    "tool_calls": [
+                        {
+                            "tool_call_id": "read-1",
+                            "function_name": action,
+                            "arguments": {"file_path": "/skills/demo-skill/SKILL.md"}
+                            if action == "Read"
+                            else {"skill": "demo-skill"},
+                        }
+                    ],
+                    "observation": {
+                        "results": [
+                            {
+                                "source_call_id": "read-1",
+                                "content": "# Demo skill",
+                                "extra": {"tool_result_is_error": False},
+                            },
+                            {
+                                "source_call_id": None,
+                                "content": "Unrelated system action failed",
+                                "extra": {"tool_result_is_error": True},
+                            },
+                        ]
+                    },
+                }
+            ],
+        }
+    ).to_json_dict()
+    calls = extractor.extract_tool_calls_as_dicts(trajectory)
+    names = extractor.get_skill_tool_calls(trajectory)
+
+    assert not calls[0].get("is_error")
+    assert names == (["demo-skill"] if action == "Skill" else [])
+    assert scorer.score_skill_execution(calls, "demo-skill", skill_tool_names=names)["score"] == 1.0
+    assert scorer.check_routing(calls, "demo-skill", skill_tool_names=names)["score"] == 1.0
+
+
+@pytest.mark.parametrize("delimiter", ("--", "'--'"))
+def test_failed_cat_with_dash_prefixed_second_file_keeps_read_credit(
+    grader: tuple[ModuleType, ModuleType], tmp_path: Path, delimiter: str
+) -> None:
+    extractor, scorer = grader
+    skill = tmp_path / "demo-skill" / "SKILL.md"
+    skill.parent.mkdir()
+    skill.write_text("# Demo skill\nActual instructions\n")
+    command = f"cat {delimiter} {shlex.quote(str(skill))} -missing-reference.md"
+    result = subprocess.run(["bash", "-c", command], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert result.stdout == skill.read_text()
+    assert "-missing-reference.md" in result.stderr
+    trajectory = _claude_tool_result(
+        name="Bash",
+        arguments={"command": command},
+        is_error=True,
+        content=result.stdout + result.stderr,
+    )
+    calls = extractor.extract_tool_calls_as_dicts(trajectory)
+
+    assert calls[0]["is_error"] is True
+    assert scorer.check_activation(calls, "demo-skill")["score"] == 0.75
+    assert scorer.check_workflow_order(calls, expected_skill="demo-skill")["score"] == 1.0
+    assert scorer.check_routing(calls, "demo-skill")["score"] == 1.0
+
+
+@pytest.mark.parametrize("options", ("--", "'--'", "-n", "-n --"))
+@pytest.mark.parametrize("is_error", (False, True))
+def test_single_cat_read_with_options(grader: tuple[ModuleType, ModuleType], options: str, is_error: bool) -> None:
+    extractor, scorer = grader
+    trajectory = _claude_tool_result(
+        name="Bash",
+        arguments={"command": f"cat {options} /skills/demo-skill/SKILL.md"},
+        is_error=is_error,
+        content="File not found" if is_error else "# Demo skill",
+    )
+    calls = extractor.extract_tool_calls_as_dicts(trajectory)
+
+    assert scorer.check_activation(calls, "demo-skill")["score"] == (0.0 if is_error else 0.75)
+    assert scorer.check_workflow_order(calls, expected_skill="demo-skill")["score"] == (0.0 if is_error else 1.0)
+    assert scorer.check_routing(calls, "demo-skill")["score"] == (0.0 if is_error else 1.0)

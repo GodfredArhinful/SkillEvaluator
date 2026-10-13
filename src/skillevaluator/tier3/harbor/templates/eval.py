@@ -3165,7 +3165,14 @@ def _failed_single_skill_read(call):
     command = tokens[0].rsplit("/", 1)[-1].lower()
     if command not in {"cat", "nl", "bat", "less", "more"}:
         return False
-    files = [arg for arg in tokens[1:] if not arg.startswith("-")]
+    files = []
+    options_ended = False
+    for arg in tokens[1:]:
+        arg = arg.removeprefix(_QUOTED_SYNTAX_MARK)
+        if not options_ended and arg == "--":
+            options_ended = True
+        elif options_ended or arg == "-" or not arg.startswith("-"):
+            files.append(arg)
     return len(files) == 1 and _skill_md_arg(files[0], {})
 
 

@@ -18,7 +18,8 @@ All notable changes to SkillEvaluator are documented in this file.
 - Preserve explicit Claude and OpenCode read failure metadata in reconstructed
   ATIF trajectories. Failed isolated SKILL.md reads and failed native Skill
   calls lose credit; compound shell failures remain ambiguous and retain
-  prior credit in host and verifier grading.
+  prior credit in host and verifier grading. Unattributed errors do not cancel
+  successful reads, and shell reads count dash-prefixed filenames after `--`.
 - Preserved multiline skill descriptions when saving and loading Tier 2
   embedding catalogs. Descriptions can contain line breaks and tabs, while
   catalog identifiers and other control characters remain strictly validated.
