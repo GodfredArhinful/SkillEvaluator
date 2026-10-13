@@ -4,17 +4,6 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ## Unreleased
 
-### Fixed
-
-- Brought the published documentation in line with 0.5.0. It now covers how
-  standard grading builds judge evidence and rebuilds trajectories from
-  OpenCode and Codex logs, structured judge output and retries, the evidence
-  budget and judge time-budget variables, and the Harbor process environment.
-  The CLI reference adds `validate --workers`, the full `--env-mode` list, and
-  the exit codes the CLI actually returns (`0`, `1`, `2`).
-
-## 0.5.0 - 2026-10-06
-
 ### Added
 
 - Tier 3 support for Harbor GKE execution mode (`--env-mode gke`) and `--ek`
@@ -33,6 +22,29 @@ All notable changes to SkillEvaluator are documented in this file.
   operator/provider credential references and literal secrets, while allowing
   operator-approved MCP endpoints and non-LLM secrets via
   `SKILLEVALUATOR_ALLOWED_MCP_HOSTS` and `SKILLEVALUATOR_ALLOWED_MCP_SECRETS`.
+- The HTML report's Tier 1 card now shows the SkillSpector version that ran
+  the security scan (for example `SkillSpector v2.12.0`), and the embedded
+  report JSON records it as `skillspector_versions`. Findings depend on the
+  scanner release, so reviewers can tell which SkillSpector produced them
+  without rerunning the scan. The version is shown even when the report omits
+  its timestamp.
+
+### Fixed
+
+- Preserved multiline skill descriptions when saving and loading Tier 2
+  embedding catalogs. Descriptions can contain line breaks and tabs, while
+  catalog identifiers and other control characters remain strictly validated.
+- Brought the published documentation in line with 0.5.0. It now covers how
+  standard grading builds judge evidence and rebuilds trajectories from
+  OpenCode and Codex logs, structured judge output and retries, the evidence
+  budget and judge time-budget variables, and the Harbor process environment.
+  The CLI reference adds `validate --workers`, the full `--env-mode` list, and
+  the exit codes the CLI actually returns (`0`, `1`, `2`).
+
+## 0.5.0 - 2026-10-06
+
+### Added
+
 - Transparent HTTP 429 (rate-limiting), transient 5xx, and timeout recovery for
   LLM judges in both the Harbor container verifier (`eval.py`) and host runtime
   (`LLMClient`). Features zero-dependency full jitter exponential backoff,
