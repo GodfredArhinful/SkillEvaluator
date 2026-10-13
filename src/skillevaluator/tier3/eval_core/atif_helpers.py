@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from skillevaluator.evidence import evidence_ref_identity
-from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import atif_content_text
+from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import atif_content_has_text, atif_content_text
 from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import (
     iter_normalized_tool_calls as iter_tool_calls,
 )
@@ -105,12 +105,12 @@ def get_agent_text(traj: dict[str, Any]) -> str:
 
 
 def get_final_response(traj: dict[str, Any]) -> str:
-    """Get the last non-empty agent message from the trajectory."""
+    """Get the last text-bearing agent message from the trajectory."""
     for step in reversed(traj.get("steps", [])):
         if step.get("source") == "agent":
-            msg = atif_content_text(step.get("message"))
-            if msg.strip():
-                return msg
+            content = step.get("message")
+            if atif_content_has_text(content):
+                return atif_content_text(content)
     return ""
 
 
@@ -502,8 +502,9 @@ def _final_response_ref(traj: dict[str, Any]) -> list[dict[str, Any]]:
         step = steps[step_idx]
         if step.get("source") != "agent":
             continue
-        msg = atif_content_text(step.get("message"))
-        if msg.strip():
+        content = step.get("message")
+        if atif_content_has_text(content):
+            msg = atif_content_text(content)
             return [
                 _evidence_ref(
                     source="trajectory.json",

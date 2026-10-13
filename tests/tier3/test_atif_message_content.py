@@ -75,6 +75,44 @@ def test_last_nonempty_structured_answer_reaches_all_judges_and_refs(harbor_eval
         assert final_refs[0]["excerpt"] == "The answer is 4."
 
 
+@pytest.mark.parametrize("media_type", ("image", "audio"))
+def test_media_only_followup_does_not_override_text_answer(
+    harbor_eval_template: ModuleType, media_type: str
+) -> None:
+    trajectory = _trajectory(
+        [
+            "The answer is 4.",
+            [{"type": media_type, "source": {
+                "media_type": "image/png" if media_type == "image" else "audio/wav",
+                "path": "/private/media",
+            }}],
+        ]
+    )
+    assert atif_helpers.get_final_response(trajectory) == "The answer is 4."
+    assert harbor_eval_template._get_final_response(trajectory) == "The answer is 4."
+    shared = atif_helpers.build_metric_evidence_bundles(trajectory, "What is 2+2?", ground_truth="4")
+    verifier = harbor_eval_template.build_metric_evidence_bundles(trajectory, "What is 2+2?", ground_truth="4")
+    assert shared == verifier
+    for metric in ("accuracy", "goal_accuracy"):
+        bundle = shared[metric]
+        assert "FINAL RESPONSE\nThe answer is 4." in bundle["prompt_evidence"]
+        refs = [ref for ref in bundle["evidence_refs"] if ref["kind"] == "final_response"]
+        assert len(refs) == 1
+        assert refs[0]["json_pointer"] == "/steps/0"
+        assert refs[0]["excerpt"] == "The answer is 4."
+    assert "/private/media" not in json.dumps(shared)
+
+
+def test_media_only_step_is_not_selected_as_final_text_response(harbor_eval_template: ModuleType) -> None:
+    trajectory = _trajectory([[{
+        "type": "audio", "source": {"media_type": "audio/wav", "path": "/private/media"}
+    }]])
+    assert atif_helpers.get_final_response(trajectory) == ""
+    assert harbor_eval_template._get_final_response(trajectory) == ""
+    assert atif_helpers._final_response_ref(trajectory) == []
+    assert harbor_eval_template._final_response_ref(trajectory) == []
+
+
 def test_multimodal_answer_uses_markers_without_media_paths(harbor_eval_template: ModuleType) -> None:
     trajectory = _trajectory(
         [

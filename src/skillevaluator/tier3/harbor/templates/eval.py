@@ -74,6 +74,7 @@ try:
         AMBIGUOUS_OUTER_EXEC_OBSERVATION,
         UNOBSERVED_INNER_CALL,
         UNSUPPORTED_NATIVE_CODEX_EXEC,
+        atif_content_has_text,
         atif_content_text,
         iter_normalized_tool_calls,
         normalized_tool_call_observation,
@@ -84,6 +85,7 @@ except ImportError:  # pragma: no cover -- source-tree import only
         AMBIGUOUS_OUTER_EXEC_OBSERVATION,
         UNOBSERVED_INNER_CALL,
         UNSUPPORTED_NATIVE_CODEX_EXEC,
+        atif_content_has_text,
         atif_content_text,
         iter_normalized_tool_calls,
         normalized_tool_call_observation,
@@ -534,9 +536,9 @@ _TOOL_NAME_SEPARATORS = (".", ":", "/", "__")
 def _get_final_response(traj):
     for step in reversed(traj.get("steps", [])):
         if step.get("source") == "agent":
-            msg = atif_content_text(step.get("message"))
-            if msg.strip():
-                return msg
+            content = step.get("message")
+            if atif_content_has_text(content):
+                return atif_content_text(content)
     return ""
 
 
@@ -797,8 +799,9 @@ def _final_response_ref(traj):
         step = steps[step_idx]
         if step.get("source") != "agent":
             continue
-        msg = atif_content_text(step.get("message"))
-        if msg.strip():
+        content = step.get("message")
+        if atif_content_has_text(content):
+            msg = atif_content_text(content)
             return [
                 _evidence_ref(
                     source="trajectory.json",
