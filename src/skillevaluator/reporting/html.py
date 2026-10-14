@@ -865,12 +865,20 @@ def _sanitize_tier3_trial(value: dict[str, Any]) -> dict[str, Any]:
     trial["scores"] = _score_mapping(trial.get("scores"))
     trial["baseline_scores"] = _score_mapping(trial.get("baseline_scores"))
     trial["lift_scores"] = _score_mapping(trial.get("lift_scores"), minimum=-1.0, maximum=1.0)
-    tokens = trial.get("tokens") if isinstance(trial.get("tokens"), dict) else {}
-    trial["tokens"] = {
-        "prompt": _nonnegative_count(tokens.get("prompt")),
-        "completion": _nonnegative_count(tokens.get("completion")),
-    }
-    trial["steps"] = _nonnegative_count(trial.get("steps"))
+    # Unavailable telemetry stays absent rather than becoming zero, so the
+    # template can omit charts and show "—" instead of reporting no usage.
+    raw_tokens = trial.pop("tokens", None)
+    tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+    prompt_tokens = _strict_nonnegative_count(tokens.get("prompt"))
+    completion_tokens = _strict_nonnegative_count(tokens.get("completion"))
+    if prompt_tokens is not None and completion_tokens is not None:
+        trial["tokens"] = {"prompt": prompt_tokens, "completion": completion_tokens}
+        cached_tokens = _strict_nonnegative_count(tokens.get("cached"))
+        if cached_tokens is not None:
+            trial["tokens"]["cached"] = cached_tokens
+    steps = _strict_nonnegative_count(trial.pop("steps", None))
+    if steps is not None:
+        trial["steps"] = steps
     trial["warnings"] = _string_list(trial.get("warnings"))
     recovery = trial.get("error_recovery") if isinstance(trial.get("error_recovery"), dict) else {}
     recovery["details"] = _string_list(recovery.get("details"))

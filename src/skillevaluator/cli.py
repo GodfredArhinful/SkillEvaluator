@@ -2589,6 +2589,8 @@ def _tier1_workflow(
         profile=policy,
         previous_version=previous_version,
     )
+    # Resolved after the run so configuration errors still leave no output.
+    output_dir = _resolve_file_report_output_location(skill_path.resolve(), output_dir, report_formats)
     if not emit_reports(
         results,
         report_formats=report_formats,
@@ -2649,10 +2651,20 @@ def _tier2_workflow(
         full_body=full_body,
     )
     sanitize_tier2_results(results, skill_path, catalog)
+    # Resolved after the run so configuration errors still leave no output; a
+    # relocated directory gets the same catalog-collision check before writing.
+    resolved_output_dir = _resolve_file_report_output_location(skill_path.resolve(), output_dir, report_formats)
+    if resolved_output_dir != output_dir:
+        _reject_catalog_report_collisions(
+            catalog,
+            report_formats=report_formats,
+            output_dir=resolved_output_dir,
+            basename=basename,
+        )
     if not emit_reports(
         results,
         report_formats=report_formats,
-        output_dir=output_dir,
+        output_dir=resolved_output_dir,
         basename=basename,
         target_path=str(skill_path),
     ):
