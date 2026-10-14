@@ -74,7 +74,8 @@ with tempfile.TemporaryDirectory() as temporary_directory:
                 "validate",
                 ".",
                 "--no-llm",
-                "--no-tier2",
+                "--tiers",
+                "1",
                 "--checks",
                 "schema,quality,lint",
                 "--report",
@@ -86,6 +87,15 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     assert validate_result.exit_code == 0, validate_result.output
     assert not (skill / "reports").exists()
     assert (temporary_root / "simple-reports" / "BENCHMARK.md").is_file()
+
+for tier in ("tier1", "tier2", "tier3"):
+    help_result = CliRunner().invoke(cli, [tier, "--help"])
+    assert help_result.exit_code == 0, help_result.output
+
+direct_result = CliRunner().invoke(
+    cli, ["tier1", FIXTURE, "--no-llm", "--checks", "schema,quality,lint", "--report", "cli"]
+)
+assert direct_result.exit_code == 0, direct_result.output
 
 leaked = sorted(m for m in BLOCKED if m in sys.modules)
 assert not leaked, f"base path imported extras-only modules: {leaked}"

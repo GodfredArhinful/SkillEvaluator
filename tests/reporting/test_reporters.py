@@ -491,6 +491,27 @@ class TestJSONReporter:
         # Compact JSON should not have newlines (except in strings)
         assert output.count("\n") == 0
 
+    def test_tier2_analysis_diagnostics_are_exported_without_unrelated_metadata(self) -> None:
+        result = ValidationResult(validator_name="Context Deduplication")
+        result.mark_scan_incomplete("deduplication-llm")
+        result.metadata["llm_analysis"] = {
+            "provider": "nv_build",
+            "model": "nvidia/test-model",
+            "clusters_total": 6,
+            "clusters_completed": 1,
+            "clusters_failed": 5,
+            "failures": [{"count": 5, "diagnostic": "HTTP 410: Model unavailable."}],
+        }
+        result.metadata["private_provider_context"] = "private-token"
+        reporter = JSONReporter(include_timestamp=False)
+
+        for text in (reporter.render(result), reporter.render_all([result])):
+            data = json.loads(text)
+            actual = data["results"][0] if "results" in data else data
+            assert actual["status"] == "incomplete"
+            assert actual["llm_analysis"] == result.metadata["llm_analysis"]
+            assert "private-token" not in text
+
     def test_name_property(self) -> None:
         """Test reporter name."""
         reporter = JSONReporter()
@@ -1606,6 +1627,32 @@ class TestValidationResultMethods:
         assert not result1.passed
         assert len(result1.errors) == 1
         assert len(result1.warnings) == 1
+
+
+class TestSkillSpectorVersionReporting:
+    def test_html_tier1_card_records_skillspector_version(self) -> None:
+        first = ValidationResult(validator_name="Security Scan")
+        first.metadata["skillspector_version"] = "2.12.0"
+        second = ValidationResult(validator_name="Security Scan")
+        second.metadata["skillspector_version"] = " 2.12.0 "
+
+        # The version must not depend on the timestamped header line.
+        html = HTMLReporter(include_timestamp=False, target_path="skills/example").render_all([first, second])
+        tier1_card = html.split("Security &amp; Static Validation", 1)[1].split("</section>", 1)[0]
+
+        assert "SkillSpector <strong>v2.12.0</strong>" in tier1_card
+        assert _html_report_data(html)["skillspector_versions"] == ["2.12.0"]
+
+    @pytest.mark.parametrize("raw_version", [None, "", "unknown", "v2.12.0", "2.12.0<script>", 212])
+    def test_html_omits_missing_or_malformed_skillspector_version(self, raw_version: object) -> None:
+        result = ValidationResult(validator_name="Security Scan")
+        if raw_version is not None:
+            result.metadata["skillspector_version"] = raw_version
+
+        html = HTMLReporter(include_timestamp=False).render_all([result])
+
+        assert "SkillSpector <strong>v" not in html
+        assert _html_report_data(html)["skillspector_versions"] == []
 
 
 class TestHTMLReporterHeroHelpers:

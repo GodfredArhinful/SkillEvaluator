@@ -43,6 +43,7 @@ from skillevaluator.constants import TIER3_LIFT_FAIL_THRESHOLD, TIER3_LIFT_PASS_
 from skillevaluator.publication_evidence import result_publication_evidence_dict
 from skillevaluator.reporting.base import (
     ReporterBase,
+    additional_errors,
     agent_eval_publication_evidence_complete,
     agent_eval_report_serialization_issue,
     agent_eval_report_serialization_limits,
@@ -71,6 +72,10 @@ from skillevaluator.reporting.harbor_viewer import normalize_agent_eval_harbor_l
 if TYPE_CHECKING:
     from skillevaluator.models import ValidationResult
 
+
+# SkillSpector reports ``metadata.skillspector_version`` as a bare semantic
+# version. Anything else is dropped rather than echoed into the report.
+_SKILLSPECTOR_VERSION_RE = re.compile(r"\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,64})?")
 
 # Tier 3 already enforces a 2 MiB canonical payload limit. HTML needs a
 # separate bound because script-safe escaping (``<`` -> ``\u003c``), pretty
@@ -1144,6 +1149,17 @@ def _bounded_tier3_preview(payload: dict[str, Any] | None) -> tuple[dict[str, An
     return preview, notice
 
 
+def _skillspector_versions(results: list[ValidationResult]) -> list[str]:
+    """Return the distinct SkillSpector versions recorded on ``results``, in first-seen order."""
+    versions: dict[str, None] = {}
+    for result in results:
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        raw_version = metadata.get("skillspector_version")
+        if isinstance(raw_version, str) and _SKILLSPECTOR_VERSION_RE.fullmatch(raw_version.strip()):
+            versions.setdefault(raw_version.strip(), None)
+    return list(versions)
+
+
 def _related_paths(finding: object) -> list[str]:
     """Return distinct path-like string values carried in finding metadata."""
     metadata = finding.get("metadata", {}) if isinstance(finding, dict) else getattr(finding, "metadata", {})
@@ -1293,6 +1309,7 @@ class HTMLReporter(ReporterBase):
         environment = Environment(loader=loader, autoescape=True)
         environment.filters["cleanly_skipped"] = is_cleanly_skipped
         environment.filters["related_paths"] = _related_paths
+        environment.filters["additional_errors"] = additional_errors
         environment.filters["adaptive_percent"] = _adaptive_percent
         environment.filters["adaptive_interval_percent"] = _adaptive_interval_percent
         environment.filters["skip_reason"] = get_skip_reason
@@ -2459,6 +2476,7 @@ class HTMLReporter(ReporterBase):
         # passed (0 critical)" etc. without leaking Tier 2 / Tier 3 stats
         # from the global aggregate counters.
         tier1_summary = self._compute_tier_summary(tier1_results)
+        tier1_skillspector_versions = _skillspector_versions(tier1_results)
         tier2_summary = self._compute_tier_summary(tier2_results)
         tier3_summary = self._compute_tier_summary(tier3_results)
         tier3_preview, tier3_preview_notice = _bounded_tier3_preview(tier3_data)
@@ -2645,6 +2663,7 @@ class HTMLReporter(ReporterBase):
                     "reason": publication.tier3.reason,
                 },
             },
+            "skillspector_versions": tier1_skillspector_versions,
         }
         report_json = (
             json.dumps(report_data, indent=2, allow_nan=False)
@@ -2727,6 +2746,7 @@ class HTMLReporter(ReporterBase):
             tier3_truncation=tier3_truncation,
             tier3_preview_notice=tier3_preview_notice,
             tier1_summary=tier1_summary,
+            skillspector_versions=tier1_skillspector_versions,
             tier2_summary=tier2_summary,
             tier3_summary=tier3_summary,
             tier1_display_results=tier1_display_results,

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from skillevaluator.config import load_pii_patterns
+from skillevaluator.provider_config import CHAT_DEFAULT_MODELS
 from skillevaluator.reporting import CLIReporter, HTMLReporter, JSONReporter, MarkdownReporter
 from skillevaluator.utils.tool_runner import ToolResult, Tools
 from skillevaluator.validators.base import Finding, Severity, ValidationResult
@@ -51,6 +52,13 @@ _SKILLSPECTOR_SEMANTIC_ANALYZERS = (
     "semantic_quality_policy",
     "semantic_security_discovery",
 )
+_SKILLSPECTOR_2_11_2_DOCS_ONLY_NOT_APPLICABLE_ANALYZERS = {
+    "behavioral_ast",
+    "behavioral_taint_tracking",
+    "bundled_execution_surface",
+    "mcp_least_privilege",
+    "meta_analyzer",
+}
 _SKILLSPECTOR_UNIVERSAL_ANALYZERS = {
     analyzer_id
     for analyzer_id in _SKILLSPECTOR_2_10_REQUIRED_ANALYZERS
@@ -204,6 +212,47 @@ def _set_universal_analyzer_work(payload: dict) -> None:
             )
             if "partial" in status:
                 status["partial"] = 0
+
+
+def _skillspector_documentation_only_report() -> dict:
+    """Return the exact SkillSpector 2.11.2 docs-only applicability shape."""
+    payload = _skillspector_json_report()
+    payload["metadata"]["skillspector_version"] = "2.11.2"
+    payload["components"] = [{"path": "SKILL.md", "executable": False}]
+    payload["analysis_completeness"].update(
+        {
+            "total_components": 1,
+            "scanned_components": 1,
+            "fully_inspected_files": 1,
+            "is_complete": False,
+            "status": "partial",
+        }
+    )
+    payload["analysis_completeness"]["analyzer_statuses"].append(
+        {
+            "analyzer_id": "bundled_execution_surface",
+            "status": "not_applicable",
+            "planned_work": 0,
+            "completed": 0,
+            "partial": 0,
+            "skipped": 0,
+            "failed": 0,
+            "unaccounted": 0,
+            "reason_code": "no_applicable_files",
+        }
+    )
+    for status in payload["analysis_completeness"]["analyzer_statuses"]:
+        if status["analyzer_id"] in _SKILLSPECTOR_2_11_2_DOCS_ONLY_NOT_APPLICABLE_ANALYZERS:
+            status.update(
+                {
+                    "status": "not_applicable",
+                    "planned_work": 0,
+                    "completed": 0,
+                    "reason_code": "no_applicable_files",
+                }
+            )
+    _set_universal_analyzer_work(payload)
+    return payload
 
 
 def _user_facing_reports(result: ValidationResult) -> list[str]:
@@ -2206,6 +2255,105 @@ Call us at 555-123-4567 or +1-555-987-6543
         assert not result.errors
         assert any(detail.check_name == "skillspector" for detail in result.success_details)
 
+    @patch("skillevaluator.validators.security.Tools")
+    def test_skillspector_accepts_fully_covered_documentation_only_report(
+        self,
+        mock_tools,
+        sample_skill_dir: Path,
+    ) -> None:
+        payload = _skillspector_documentation_only_report()
+
+        result = _validate_skillspector_payload(mock_tools, sample_skill_dir, payload)
+
+        assert result.passed
+        assert not result.errors
+        assert any(detail.check_name == "skillspector" for detail in result.success_details)
+
+    @pytest.mark.parametrize(
+        "invalid_evidence",
+        ["unexpected-not-applicable", "wrong-reason", "unsupported-version"],
+    )
+    @patch("skillevaluator.validators.security.Tools")
+    def test_skillspector_documentation_only_exception_requires_exact_applicability_evidence(
+        self,
+        mock_tools,
+        sample_skill_dir: Path,
+        invalid_evidence: str,
+    ) -> None:
+        payload = _skillspector_documentation_only_report()
+        statuses = payload["analysis_completeness"]["analyzer_statuses"]
+        if invalid_evidence == "unexpected-not-applicable":
+            status = next(item for item in statuses if item["analyzer_id"] == "mcp_tool_poisoning")
+            status.update(
+                {
+                    "status": "not_applicable",
+                    "planned_work": 0,
+                    "completed": 0,
+                    "reason_code": "no_applicable_files",
+                }
+            )
+        elif invalid_evidence == "wrong-reason":
+            status = next(item for item in statuses if item["analyzer_id"] == "behavioral_ast")
+            status["reason_code"] = "disabled_by_configuration"
+        else:
+            payload["metadata"]["skillspector_version"] = "2.11.3"
+
+        result = _validate_skillspector_payload(mock_tools, sample_skill_dir, payload)
+
+        assert result.is_incomplete
+        assert not any(detail.check_name == "skillspector" for detail in result.success_details)
+
+    @pytest.mark.parametrize(
+        "incomplete_detail",
+        [
+            pytest.param({"coverage_percent": 0}, id="missing-coverage"),
+            pytest.param({"partially_inspected_files": 1}, id="partially-inspected"),
+            pytest.param({"limitations": ["Analyzer failed."]}, id="limitation"),
+            pytest.param({"ledger_exceptions": [{"fatal": False}]}, id="ledger-exception"),
+        ],
+    )
+    @patch("skillevaluator.validators.security.Tools")
+    def test_skillspector_documentation_only_exception_requires_full_coverage(
+        self,
+        mock_tools,
+        sample_skill_dir: Path,
+        incomplete_detail: dict,
+    ) -> None:
+        payload = _skillspector_json_report()
+        payload["analysis_completeness"].update(
+            {
+                "is_complete": False,
+                "status": "partial",
+                **incomplete_detail,
+            }
+        )
+        payload["analysis_completeness"]["analyzer_statuses"][0].update(
+            {"status": "not_applicable", "planned_work": 0, "completed": 0}
+        )
+
+        result = _validate_skillspector_payload(mock_tools, sample_skill_dir, payload)
+
+        assert result.is_incomplete
+        assert not any(detail.check_name == "skillspector" for detail in result.success_details)
+
+    @patch("skillevaluator.validators.security.Tools")
+    def test_skillspector_executable_skill_cannot_use_documentation_only_exception(
+        self,
+        mock_tools,
+        sample_skill_dir: Path,
+    ) -> None:
+        payload = _skillspector_json_report()
+        payload["metadata"]["has_executable_scripts"] = True
+        payload["analysis_completeness"].update({"is_complete": False, "status": "partial"})
+        payload["analysis_completeness"]["analyzer_statuses"][0].update(
+            {"status": "not_applicable", "planned_work": 0, "completed": 0}
+        )
+
+        result = _validate_skillspector_payload(mock_tools, sample_skill_dir, payload)
+
+        assert result.is_incomplete
+        assert not any(detail.check_name == "skillspector" for detail in result.success_details)
+
     @pytest.mark.parametrize("version", ["2.9.5-safe", "2.9.6", "2.11.1-safe"])
     @patch("skillevaluator.validators.security.Tools")
     def test_skillspector_accepts_captured_no_llm_report(
@@ -3750,7 +3898,7 @@ Call us at 555-123-4567 or +1-555-987-6543
         assert child_env["OPENAI_API_KEY"] == public_key
         assert child_env["OPENAI_BASE_URL"] == "https://integrate.api.nvidia.com/v1"
         assert child_env["SKILLSPECTOR_PROVIDER"] == "openai"
-        assert child_env["SKILLSPECTOR_MODEL"] == "nvidia/nemotron-3-nano-30b-a3b"
+        assert child_env["SKILLSPECTOR_MODEL"] == "nvidia/nemotron-3-super-120b-a12b"
         assert "NVIDIA_API_KEY" not in child_env
         assert "ANTHROPIC_API_KEY" not in child_env
         assert retired_name not in child_env
@@ -3800,10 +3948,11 @@ Call us at 555-123-4567 or +1-555-987-6543
         assert "NVIDIA_API_KEY" not in child_env
 
     @pytest.mark.parametrize(
-        ("provider", "credential", "model"),
+        ("provider", "credential", "model", "effort"),
         (
-            ("openai", "OPENAI_API_KEY", "gpt-5.6-sol"),
-            ("anthropic", "ANTHROPIC_API_KEY", "claude-opus-5"),
+            ("openai", "OPENAI_API_KEY", "gpt-6.1-sol", "medium"),
+            ("anthropic", "ANTHROPIC_API_KEY", "claude-opus-5", None),
+            ("bedrock", "AWS_BEARER_TOKEN_BEDROCK", "us.anthropic.claude-opus-5", None),
         ),
     )
     def test_skillspector_child_environment_maps_supported_public_provider_defaults(
@@ -3812,17 +3961,21 @@ Call us at 555-123-4567 or +1-555-987-6543
         provider: str,
         credential: str,
         model: str,
+        effort: str | None,
     ) -> None:
         monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", provider)
         monkeypatch.setenv(credential, "provider-test-key")
+        monkeypatch.delenv("SKILL_EVAL_LLM_MODEL", raising=False)
         monkeypatch.delenv("SKILLSPECTOR_PROVIDER", raising=False)
         monkeypatch.delenv("SKILLSPECTOR_MODEL", raising=False)
+        monkeypatch.delenv("SKILLSPECTOR_REASONING_EFFORT", raising=False)
 
         child_env = _skillspector_child_env()
 
         assert child_env is not None
         assert child_env["SKILLSPECTOR_PROVIDER"] == provider
         assert child_env["SKILLSPECTOR_MODEL"] == model
+        assert child_env.get("SKILLSPECTOR_REASONING_EFFORT") == effort
 
     def test_skillspector_bedrock_environment_keeps_only_aws_chain(self, monkeypatch) -> None:
         monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", "bedrock")
@@ -3882,6 +4035,150 @@ Call us at 555-123-4567 or +1-555-987-6543
         assert os.environ["OPENAI_API_KEY"] == "ambient-openai-key"
         assert os.environ["OPENAI_BASE_URL"] == "https://ambient.example.test/v1"
 
+    @pytest.mark.parametrize(
+        ("provider", "credentials", "expected"),
+        (
+            ("openai", {"OPENAI_API_KEY": "provider-test-key"}, "gpt-6.1-sol"),
+            ("anthropic", {"ANTHROPIC_API_KEY": "provider-test-key"}, "claude-opus-5"),
+            ("bedrock", {"AWS_BEARER_TOKEN_BEDROCK": "provider-test-key"}, "us.anthropic.claude-opus-5"),
+            ("nv_build", {"NVIDIA_API_KEY": "provider-test-key"}, "nvidia/nemotron-3-super-120b-a12b"),
+            (
+                "openai-compatible",
+                {
+                    "SKILL_EVAL_LLM_API_KEY": "provider-test-key",
+                    "SKILL_EVAL_LLM_BASE_URL": "https://llm.example.test/v1",
+                },
+                "nvidia/nvidia/nemotron-3-super-120b-long-ctx",
+            ),
+        ),
+    )
+    def test_skillspector_model_does_not_follow_a_changed_chat_default(
+        self, monkeypatch, provider: str, credentials: dict[str, str], expected: str
+    ) -> None:
+        monkeypatch.setitem(CHAT_DEFAULT_MODELS, provider, "changed-chat-default")
+        monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", provider)
+        for name, value in credentials.items():
+            monkeypatch.setenv(name, value)
+        for name in ("SKILL_EVAL_LLM_MODEL", "SKILLSPECTOR_PROVIDER", "SKILLSPECTOR_MODEL"):
+            monkeypatch.delenv(name, raising=False)
+
+        assert _skillspector_child_env()["SKILLSPECTOR_MODEL"] == expected
+
+    @pytest.mark.parametrize(
+        ("skillspector_model", "expected"),
+        ((None, "claude-opus-5-5"), ("claude-opus-5", "claude-opus-5")),
+    )
+    def test_explicit_models_reach_skillspector_in_precedence_order(
+        self,
+        monkeypatch,
+        skillspector_model: str | None,
+        expected: str,
+    ) -> None:
+        monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "provider-test-key")
+        monkeypatch.setenv("SKILL_EVAL_LLM_MODEL", "claude-opus-5-5")
+        monkeypatch.delenv("SKILLSPECTOR_PROVIDER", raising=False)
+        if skillspector_model is None:
+            monkeypatch.delenv("SKILLSPECTOR_MODEL", raising=False)
+        else:
+            monkeypatch.setenv("SKILLSPECTOR_MODEL", skillspector_model)
+
+        assert _skillspector_child_env()["SKILLSPECTOR_MODEL"] == expected
+
+    @pytest.mark.parametrize("skillspector_provider", (None, "openai"))
+    def test_operator_skillspector_model_settings_are_forwarded_without_temperature(
+        self,
+        monkeypatch,
+        skillspector_provider: str | None,
+    ) -> None:
+        monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-test-key")
+        if skillspector_provider is None:
+            monkeypatch.delenv("SKILLSPECTOR_PROVIDER", raising=False)
+        else:
+            monkeypatch.setenv("SKILLSPECTOR_PROVIDER", skillspector_provider)
+        monkeypatch.setenv("SKILLSPECTOR_MODEL_META_ANALYZER", "gpt-5.6-sol")
+        monkeypatch.setenv("SKILLSPECTOR_MODEL_REGISTRY", "/etc/skillspector/model_registry.yaml")
+        monkeypatch.setenv("SKILLSPECTOR_REASONING_EFFORT", "high")
+        monkeypatch.setenv("SKILLSPECTOR_TEMPERATURE", "0")
+
+        child_env = _skillspector_child_env()
+
+        assert child_env["SKILLSPECTOR_MODEL_META_ANALYZER"] == "gpt-5.6-sol"
+        assert child_env["SKILLSPECTOR_MODEL_REGISTRY"] == "/etc/skillspector/model_registry.yaml"
+        assert child_env["SKILLSPECTOR_REASONING_EFFORT"] == "high"
+        assert "SKILLSPECTOR_TEMPERATURE" not in child_env
+
+    @pytest.mark.parametrize(
+        ("environment", "effort"),
+        (
+            ({}, None),
+            ({"SKILL_EVAL_LLM_MODEL": "openai/openai/gpt-6.1-sol"}, "medium"),
+            ({"SKILL_EVAL_LLM_MODEL": "aws/anthropic/bedrock-claude-opus-5-5"}, None),
+            ({"SKILLSPECTOR_MODEL": "gpt-6.1-sol"}, "medium"),
+            ({"SKILLSPECTOR_MODEL": "gpt-5.6-sol"}, None),
+            ({"SKILLSPECTOR_MODEL": "gpt-6.1-sol", "SKILLSPECTOR_REASONING_EFFORT": "high"}, "high"),
+            ({"SKILLSPECTOR_MODEL": "gpt-6.1-sol", "SKILLSPECTOR_MODEL_META_ANALYZER": "gpt-6.1-sol"}, "medium"),
+            ({"SKILLSPECTOR_MODEL": "gpt-6.1-sol", "SKILLSPECTOR_MODEL_META_ANALYZER": "claude-opus-5-5"}, None),
+            ({"SKILLSPECTOR_MODEL": "gpt-6.1-sol", "SKILLSPECTOR_MODEL_REGISTRY": "/registry.yaml"}, "medium"),
+            ({"SKILLSPECTOR_PROVIDER": "openai", "SKILLSPECTOR_MODEL": "gpt-6.1-sol"}, "medium"),
+            ({"SKILLSPECTOR_PROVIDER": "openai"}, None),
+        ),
+    )
+    def test_skillspector_reasoning_effort_defaults_to_medium_only_for_gpt_6_models(
+        self,
+        monkeypatch,
+        environment: dict[str, str],
+        effort: str | None,
+    ) -> None:
+        monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", "openai-compatible")
+        monkeypatch.setenv("SKILL_EVAL_LLM_API_KEY", "compatible-test-key")
+        monkeypatch.setenv("SKILL_EVAL_LLM_BASE_URL", "https://llm.example.test/v1")
+        for name in (
+            "SKILL_EVAL_LLM_MODEL",
+            "SKILLSPECTOR_PROVIDER",
+            "SKILLSPECTOR_MODEL",
+            "SKILLSPECTOR_MODEL_META_ANALYZER",
+            "SKILLSPECTOR_MODEL_REGISTRY",
+            "SKILLSPECTOR_REASONING_EFFORT",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+
+        assert _skillspector_child_env().get("SKILLSPECTOR_REASONING_EFFORT") == effort
+
+    def test_llm_stage_records_requested_skillspector_model_and_effort(
+        self,
+        monkeypatch,
+        sample_skill_dir: Path,
+    ) -> None:
+        monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-test-key")
+        monkeypatch.setenv("SKILL_EVAL_LLM_MODEL", "gpt-6.1-sol")
+        for name in ("SKILLSPECTOR_PROVIDER", "SKILLSPECTOR_MODEL", "SKILLSPECTOR_REASONING_EFFORT"):
+            monkeypatch.delenv(name, raising=False)
+        reports = (_skillspector_json_report(), _skillspector_json_report(llm_requested=True, llm_available=True))
+
+        with (
+            patch.object(Tools.skillspector, "_path", "/usr/bin/skillspector"),
+            patch.object(
+                Tools.skillspector,
+                "run",
+                side_effect=[
+                    ToolResult(success=True, stdout=json.dumps(report), stderr="", exit_code=0) for report in reports
+                ],
+            ) as mock_run,
+        ):
+            result = SecurityValidator(use_llm=True).validate_security_only(sample_skill_dir)
+
+        static_env, child_env = (call.kwargs["env"] for call in mock_run.call_args_list)
+        assert "SKILLSPECTOR_REASONING_EFFORT" not in static_env
+        assert child_env["SKILLSPECTOR_REASONING_EFFORT"] == "medium"
+        assert result.metadata["skillspector_model"] == "gpt-6.1-sol"
+        assert result.metadata["skillspector_reasoning_effort"] == "medium"
+        assert result.metadata["skillspector_version"] == "2.10.0"
+
     def test_partial_llm_verdicts_are_reported_as_partial(self, tmp_path: Path) -> None:
         """A verifier response covering only some findings must not claim full confirmation."""
         result = ValidationResult()
@@ -3909,6 +4206,43 @@ Call us at 555-123-4567 or +1-555-987-6543
 
         assert not any("confirmed all findings" in message.lower() for message in result.messages)
         assert any("1 of 2 findings" in message and "not verified" in message for message in result.messages)
+
+    @pytest.mark.parametrize("explanation_key", ["rationale", "reasoning"])
+    def test_llm_verdict_explanation_reads_rationale_or_legacy_reasoning(
+        self, tmp_path: Path, explanation_key: str
+    ) -> None:
+        """The prompt asks for "rationale"; a reply using the older "reasoning" key still counts."""
+        result = ValidationResult()
+        result.add_structured_finding(
+            Finding(category="PII", severity=Severity.HIGH, check_name="email", message="Email", file_path="SKILL.md"),
+            is_error=True,
+        )
+
+        with patch("skillevaluator.inference.FindingVerifier") as verifier_cls:
+            verifier_cls.return_value.verify.return_value = {
+                0: {"verdict": "false_positive", "confidence": "high", explanation_key: "Documentation example."}
+            }
+            SecurityValidator(verify_llm=True)._verify_findings_with_llm(result, tmp_path)
+
+        assert result.findings[0].metadata["llm_reasoning"] == "Documentation example."
+        assert result.findings[0].severity == Severity.INFO
+        assert "incomplete_scans" not in result.metadata
+
+    def test_llm_verification_without_verdicts_reports_the_cause(self, tmp_path: Path) -> None:
+        result = ValidationResult()
+        result.add_structured_finding(
+            Finding(category="PII", severity=Severity.HIGH, check_name="email", message="Email", file_path="SKILL.md"),
+            is_error=True,
+        )
+        cause = "The model declined the request (safety refusal)."
+
+        with patch("skillevaluator.inference.FindingVerifier") as verifier_cls:
+            verifier_cls.return_value.verify.return_value = {}
+            verifier_cls.return_value.last_failure = cause
+            SecurityValidator(verify_llm=True)._verify_findings_with_llm(result, tmp_path)
+
+        assert result.metadata["incomplete_scans"] == ["llm-verification"]
+        assert f"LLM finding verification was skipped (no verdicts returned: {cause})" in result.messages
 
     def test_validate_security_only(self, sample_skill_dir: Path):
         """Test validate_security_only method runs only skillspector scan."""
@@ -5308,3 +5642,58 @@ class TestSpdxAndIpFalsePositiveHardening:
         result = SecurityValidator().validate_pii_only(skill_dir)
 
         assert any(finding.check_name == "ip_addresses" for finding in result.findings)
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36\n",
+            "HeadlessChrome/151.0.0.0 -> Chrome/151.0.0.0\n",
+            "Edge reports `Edg/140.0.0.0` and Opera reports OPR/122.0.0.0.\n",
+            "page = browser.new_page(user_agent='Chrome/140.0.0.0', base_url=base)\n",
+            '{"ua": "Mozilla\\/5.0 (X11; Linux x86_64) Chrome\\/140.0.0.0 Safari\\/537.36"}\n',
+        ],
+    )
+    def test_user_agent_product_versions_are_not_pii(self, tmp_path: Path, line: str) -> None:
+        skill_dir = tmp_path / "user-agent-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(line, encoding="utf-8")
+
+        result = SecurityValidator().validate_pii_only(skill_dir)
+
+        assert not any(finding.check_name == "ip_addresses" for finding in result.findings)
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "backups/8.8.8.8\n",
+            "Backups/8.8.8.8\n",
+            "whitelist: Office/52.14.1.9\n",
+            "https://files.example.com/Chrome/8.8.8.8\n",
+            "Proxy/8.8.8.8\n",
+            "Allow 52.0.0.0 through the firewall.\n",
+            "allowlist/52.0.0.0/8\n",
+            "https://api.example.com/v1/ips/52.0.0.0/8\n",
+        ],
+    )
+    def test_ip_outside_a_reduced_user_agent_version_remains_pii(self, tmp_path: Path, line: str) -> None:
+        skill_dir = tmp_path / "slash-ip-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(line, encoding="utf-8")
+
+        result = SecurityValidator().validate_pii_only(skill_dir)
+
+        assert any(finding.check_name == "ip_addresses" for finding in result.findings)
+
+    def test_real_ip_on_a_user_agent_line_remains_pii(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "user-agent-and-ip-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("Chrome/140.0.0.0 through proxy 8.8.8.8\n", encoding="utf-8")
+
+        result = SecurityValidator().validate_pii_only(skill_dir)
+
+        assert [
+            finding.metadata.get("matched_value")
+            for finding in result.findings
+            if finding.check_name == "ip_addresses"
+        ] == ["8.8.8.8"]

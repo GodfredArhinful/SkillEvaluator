@@ -45,11 +45,16 @@ from skillevaluator.reporting.base import (
     result_matches_publication_target,
     select_agent_eval_payload,
 )
+from skillevaluator.source_identity import evaluated_source_revision, recorded_evaluated_source
 from skillevaluator.tier3_environments import HARBOR_ENV_MODES
 
 if TYPE_CHECKING:
     from skillevaluator.models import Finding, ValidationResult
 
+
+# These fields are empty because the orchestration input did not supply them,
+# which is a different cause from the legacy/non-live wording used elsewhere.
+_SOURCE_UNRECORDED = "not recorded (not supplied by the orchestration input)"
 
 _SIGNAL_DESCRIPTIONS = {
     "security": "unsafe operations, secret leakage, and unauthorized access",
@@ -266,6 +271,29 @@ class BenchmarkReporter(ReporterBase):
             f"- Evaluator version: `{version}`"
             if version
             else "- Evaluator version: not recorded (legacy or non-live result)"
+        )
+
+        # Validated by ``normalized_evaluated_source``, so the identity is
+        # published verbatim: escaping would rewrite `_` and `@` and corrupt the
+        # very value the card exists to record.
+        source = _evaluated_source(results)
+        repository = source.get("repository", "")
+        lines.append(
+            f"- Evaluated source: `{repository}`" if repository else "- Evaluated source: " + _SOURCE_UNRECORDED
+        )
+
+        revision = evaluated_source_revision(source)
+        lines.append(
+            f"- Evaluated source revision: `{revision}`"
+            if revision
+            else "- Evaluated source revision: " + _SOURCE_UNRECORDED
+        )
+
+        container_revision = source.get("evaluator_container_revision", "")
+        lines.append(
+            f"- Evaluator container revision: `{container_revision}`"
+            if container_revision
+            else "- Evaluator container revision: " + _SOURCE_UNRECORDED
         )
 
         agents = _agents(ae)
@@ -647,6 +675,14 @@ class BenchmarkReporter(ReporterBase):
 
 
 def _agent_eval_payload(results: list[ValidationResult]) -> dict[str, Any] | None:
+    """Return the payload the score and run-detail lines describe.
+
+    A card reports one live evaluation, so one payload is rendered: the
+    strongest Tier 3 payload, selected independently of result order. That
+    choice is safe for scores, which belong to a single run, but not for the
+    evaluated-source identity: see ``_evaluated_source``, which folds every
+    carrier instead so a second payload cannot be silently dropped.
+    """
     return select_agent_eval_payload(results)
 
 
@@ -860,6 +896,30 @@ def _evaluation_date(value: str) -> str:
         return parsed.date().isoformat()
     except ValueError:
         return value[:10] if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", value) else value
+
+
+def _evaluated_source(results: list[ValidationResult]) -> dict[str, str]:
+    """Return the validated evaluated-source identity recorded for this run.
+
+    Every card shape needs a carrier for the identity, not just a completed
+    Tier 3 run: a Tier 1-only card and an advisory Tier 3 skip can both publish
+    a PASS. The identity is therefore read from every result's metadata and from
+    every nested agent-eval payload alike, mirroring how the persisted
+    publication policy is resolved.
+
+    The results are handed to ``recorded_evaluated_source`` whole rather than
+    alongside the single payload the score lines use, because that payload is
+    the first one found: a run carrying two agent-eval results would otherwise
+    publish the identity of whichever came first and would name the other after
+    the list was reversed. Folding every carrier makes that disagreement raise
+    ``EvaluatedSourceConflict`` in either order.
+
+    The value is re-validated by the fold rather than trusted, because a card can
+    be rendered from a hand-built or legacy metadata dict that never passed the
+    producer. Kept separate from the evaluator/container provenance so a reader
+    can tell which source tree was evaluated from the build that evaluated it.
+    """
+    return recorded_evaluated_source(result.metadata for result in results) or {}
 
 
 def _environment(ae: dict[str, Any] | None) -> str | None:

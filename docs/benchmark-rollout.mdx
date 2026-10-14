@@ -57,10 +57,12 @@ skillevaluator validate ./skills/example-skill \
 ```
 
 Tier 1 is always publication-required. Tier 2 and Tier 3 are
-publication-required by default. Omitting Tier 2 with `--no-dedup` or
-`--tiers 1,3`, or omitting Tier 3 by leaving out `--agent-eval`, therefore
-produces an `INCOMPLETE` card with the omitted tier marked `NOT RUN` and never a
-publication recommendation. `--no-block-on-dedup` changes the command exit
+publication-required by default, and Tier 3 runs by default for skills.
+Excluding Tier 2 with `--no-dedup` or a `--tiers` selection without `2` (such
+as `--tiers 1,3`), or excluding Tier 3 with `--no-tier3` or a `--tiers`
+selection without `3`, therefore produces an `INCOMPLETE` card with the omitted
+tier marked `NOT RUN` and never a publication recommendation.
+`--no-block-on-dedup` changes the command exit
 gate; it is not a publication waiver.
 
 If a catalog intentionally makes Tier 2 or Tier 3 optional, its orchestration
@@ -138,6 +140,26 @@ Scan all candidates before copying them into skills:
 uv run python scripts/ci/check_public_benchmarks.py \
   --require-files \
   ./benchmark-backfill
+```
+
+Add `--require-source-provenance` for any tree whose cards were generated with
+the evaluated-source identity supplied. SkillEvaluator's own CI runs the scan
+with the flag. It requires every scanned card to carry `Evaluated source`,
+`Evaluated source revision` and `Evaluator container revision`, and fails any
+card publishing a `PASS` that does not record the repository and revision it
+evaluated, or whose evaluator container is named by a mutable tag rather than
+pinned by digest. That includes a card whose Tier 3 row is skipped under an
+`optional by policy` contract. The flag stays opt-in because cards generated
+before the identity contract existed cannot satisfy it; without it the scan
+skips these identity checks.
+
+Supply the identity when regenerating a card:
+
+```bash
+skillevaluator validate ./my-skill \
+  --evaluated-source-repository NVIDIA/NVFlare \
+  --evaluated-source-revision 2263a2ebdab903e87f7e7c0a001d22c3a926a9cf \
+  --evaluator-container-revision ghcr.io/nvidia/skillevaluator@sha256:0117bc2e...
 ```
 
 The linter rejects configured known leak patterns such as retired product

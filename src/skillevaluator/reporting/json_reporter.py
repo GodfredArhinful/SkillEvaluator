@@ -30,6 +30,7 @@ from skillevaluator.reporting.base import (
     result_publication_target_dict,
     select_agent_eval_payload,
 )
+from skillevaluator.source_identity import recorded_evaluated_source
 
 if TYPE_CHECKING:
     from skillevaluator.models import ValidationResult
@@ -187,6 +188,16 @@ class JSONReporter(ReporterBase):
         if policy is not None:
             data["policy"] = policy
 
+        # BENCHMARK.md records which source tree was evaluated, so the report a
+        # CI job actually parses has to record it too: a consumer cannot verify
+        # a card it never reads. The key is always present, so ``null`` says the
+        # orchestration input supplied no identity rather than leaving a caller
+        # to guess whether an older reporter simply omitted it. Every carrier is
+        # folded, so a run recording two source trees raises rather than
+        # publishing one of them. The CLI resolves the identity before any
+        # report is written, so this fails closed only on programmatic misuse.
+        data["evaluated_source"] = recorded_evaluated_source(r.metadata for r in results)
+
         gating_by_tier: dict[str, dict[str, Any]] = {}
         for result in results:
             gating = result.metadata.get("gating")
@@ -198,6 +209,10 @@ class JSONReporter(ReporterBase):
             tier_entry["validators"].append(result.validator_name)
         if gating_by_tier:
             data["gating"] = {"tiers": gating_by_tier}
+
+        workflow = next((r.metadata["workflow"] for r in results if r.metadata.get("workflow")), None)
+        if workflow is not None:
+            data["workflow"] = workflow
 
         # Quality summary from any QUALITY validator results
         quality_results = [r.metadata["quality_scores"] for r in results if r.metadata.get("quality_scores")]
@@ -312,6 +327,16 @@ class JSONReporter(ReporterBase):
         publication_evidence = result_publication_evidence_dict(result)
         if publication_evidence is not None:
             data["publication_evidence"] = publication_evidence
+
+        workflow = result.metadata.get("workflow")
+        if isinstance(workflow, dict):
+            data["workflow"] = workflow
+
+        # Tier 2 records bounded provider diagnostics and completed/failed
+        # cluster counts independently of duplicate-content findings.
+        llm_analysis = result.metadata.get("llm_analysis")
+        if isinstance(llm_analysis, dict):
+            data["llm_analysis"] = llm_analysis
 
         return data
 
