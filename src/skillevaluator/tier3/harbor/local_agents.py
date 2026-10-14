@@ -23,12 +23,13 @@ from urllib.parse import urlsplit
 
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.agents.installed.claude_code import ClaudeCode
-from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.opencode import OpenCode
 from harbor.agents.model_connection import ResolvedModelConnection, without_inferred_endpoint
 from harbor.models.trial.paths import EnvironmentPaths
 from harbor.utils.env import parse_bool_env_value
 
+from skillevaluator.provider_config import is_claude_5_5_or_later, is_gpt6_model
+from skillevaluator.tier3.harbor.installed_agents import SkillEvaluatorClaudeCode, SkillEvaluatorCodex
 from skillevaluator.tier3.harbor.nvidia_build_bridge import (
     MAX_REQUESTS_PER_BRIDGE,
     RunningBridge,
@@ -51,6 +52,11 @@ _NVIDIA_BUILD_BRIDGE_API_KEY_ENV = "SKILLEVALUATOR_NVIDIA_BUILD_BRIDGE_API_KEY"
 _NVIDIA_BUILD_BRIDGE_CLIENT_TOKEN_ENV = "SKILLEVALUATOR_NVIDIA_BUILD_BRIDGE_CLIENT_TOKEN"
 _NVIDIA_BUILD_FILE_BACKED_SENTINEL_KEY = "skillevaluator-file-backed-nvidia-key"
 _NVIDIA_BUILD_HOST_KEY_FILE_ENV = "SKILLEVALUATOR_NVIDIA_API_KEY_FILE"
+# Local mode runs the CLI installed on the host, not the release Harbor installs
+# in other environments. These are the oldest releases that run each model family.
+_CLAUDE_CODE_MIN_VERSION_FOR_CLAUDE_5_5 = (2, 1, 280)
+_CODEX_MIN_VERSION_FOR_GPT_6 = (0, 159, 1)
+_CLI_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +114,17 @@ def _merge_codex_openai_compatible_config(config: dict[str, Any], base_url: str)
         }
     )
     return config
+
+
+def _require_cli_version(cli: str, version: str, minimum: tuple[int, int, int], model: str) -> None:
+    """Fail before the agent starts when the installed ``cli`` is too old for ``model``."""
+    match = _CLI_VERSION_RE.search(version)
+    if match is None or tuple(int(part) for part in match.groups()) < minimum:
+        required = ".".join(str(part) for part in minimum)
+        raise RuntimeError(
+            f"{model} needs {cli} {required} or newer, but the installed {cli} reports version {version!r}. "
+            f"Update the {cli} CLI or use --env-mode docker."
+        )
 
 
 def _rewrite_launcher_segment(command: str, rewrite: Callable[[str], str]) -> str:
@@ -327,7 +344,11 @@ class SkillEvaluatorLocalClaudeCode(SkillEvaluatorClaudeCode):
     _REMOTE_CLAUDE_TMP = PurePosixPath(EnvironmentPaths.agent_dir / "claude-tmp")
 
     async def install(self, environment: BaseEnvironment) -> None:
-        await self.exec_as_agent(environment, command="claude --version")
+        result = await self.exec_as_agent(environment, command="claude --version")
+        self._version = self.parse_version(result.stdout or "")
+        model = self.model_name or ""
+        if is_claude_5_5_or_later(model):
+            _require_cli_version("claude", self._version, _CLAUDE_CODE_MIN_VERSION_FOR_CLAUDE_5_5, model)
 
     def get_version_command(self) -> str | None:
         return "claude --version"
@@ -356,7 +377,7 @@ class SkillEvaluatorLocalClaudeCode(SkillEvaluatorClaudeCode):
         )
 
 
-class SkillEvaluatorGatewayCodex(Codex):
+class SkillEvaluatorGatewayCodex(SkillEvaluatorCodex):
     """Use an explicit Responses gateway without truncating its catalog model ID."""
 
     def _build_effective_config(self, openai_base_url: str | None = None) -> dict[str, Any]:
@@ -405,7 +426,11 @@ class SkillEvaluatorLocalCodex(SkillEvaluatorGatewayCodex):
     _REMOTE_CODEX_SECRETS_DIR = PurePosixPath(EnvironmentPaths.agent_dir / "codex-secrets")
 
     async def install(self, environment: BaseEnvironment) -> None:
-        await self.exec_as_agent(environment, command="codex --version")
+        result = await self.exec_as_agent(environment, command="codex --version")
+        self._version = self.parse_version(result.stdout or "")
+        model = self.model_name or ""
+        if is_gpt6_model(model):
+            _require_cli_version("codex", self._version, _CODEX_MIN_VERSION_FOR_GPT_6, model)
 
     def get_version_command(self) -> str | None:
         return "codex --version"
@@ -876,7 +901,7 @@ class _NvidiaBuildBridgeAgent:
                         raise
 
 
-class SkillEvaluatorNvidiaBuildCodex(_NvidiaBuildBridgeAgent, Codex):
+class SkillEvaluatorNvidiaBuildCodex(_NvidiaBuildBridgeAgent, SkillEvaluatorCodex):
     """Stock Codex CLI routed through the in-trial NVIDIA Build bridge."""
 
     _BRIDGE_CLIENT_ENV_UNSET = ("NVIDIA_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE")

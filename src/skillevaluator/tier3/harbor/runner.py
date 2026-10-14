@@ -41,10 +41,12 @@ from skillevaluator.provider_config import (
     ADC_DISCOVERY_ENV_VARS,
     CHAT_DEFAULT_ANTHROPIC,
     CHAT_DEFAULT_NVIDIA,
+    CHAT_DEFAULT_OPENAI,
     CREDENTIAL_EXPIRY_ENV,
     CREDENTIAL_SOURCE_ADC,
     CREDENTIAL_SOURCE_ENV,
     GATEWAY_AGENT_DEFAULT_MODELS,
+    OPENCODE_OPENAI_DEFAULT_MODEL,
     ProviderConfig,
     ProviderConfigurationError,
     _get_google_access_token,
@@ -52,12 +54,15 @@ from skillevaluator.provider_config import (
     _normalize_anthropic_base_url,
     _normalize_expiry_epoch,
     compute_adc_job_timeout,
+    effective_reasoning_effort,
     get_adc_token_expiry,
+    is_claude_5_5_or_later,
     refresh_host_vertex_adc_environment,
     resolve_llm_provider,
 )
 from skillevaluator.source_identity import normalized_evaluated_source
 from skillevaluator.tier3.case_ids import validate_case_ids
+from skillevaluator.tier3.eval_core.llm_judge import JUDGE_REASONING_EFFORT
 from skillevaluator.tier3.evals_config import (
     _GKE_INFRASTRUCTURE_KWARGS,
     MAX_HARBOR_TIMEOUT_MULTIPLIER,
@@ -67,7 +72,7 @@ from skillevaluator.tier3.evals_config import (
     load_evals_config,
     validate_environment_kwargs,
 )
-from skillevaluator.tier3.harbor import CONTAINER_AGENT_IMPORT_PATHS
+from skillevaluator.tier3.harbor import CONTAINER_AGENT_IMPORT_PATHS, DOCKER_AGENT_IMPORT_PATHS
 from skillevaluator.tier3.harbor.adapter import (
     _RUNTIME_PROCESS_CONTROL_ENV_NAMES,
     _RUNTIME_PROCESS_CONTROL_ENV_PREFIXES,
@@ -1045,12 +1050,25 @@ def _harbor_bin() -> str:
 # no file outside the allowlisted environment can add credentials or settings.
 # These controls are applied at launch, outside the secret-tracked environment.
 _HARBOR_LAUNCH_ENV = MappingProxyType({"HARBOR_TELEMETRY": "0", "PYTHON_DOTENV_DISABLED": "1"})
+# Harbor installs the latest agent CLI unless given a ``version``. Pin the
+# releases SkillEvaluator was validated with, so trials do not change when a
+# new CLI ships. Local mode runs the operator's installed CLI instead, and its
+# wrappers check a minimum version for the selected model.
+_CODEX_VERSION = "0.161.0"
+_CLAUDE_CODE_VERSION = "2.1.292"
 # Harbor 0.22's Codex agent ran with ``model_reasoning_effort=high``; later
 # releases defer to Codex's own default. Pin the effort SkillEvaluator was
 # validated with so scores and cost stay comparable across Harbor upgrades.
 _HARBOR_AGENT_KWARGS: Mapping[str, Mapping[str, str]] = MappingProxyType(
-    {"codex": MappingProxyType({"reasoning_effort": "high"})}
+    {
+        "codex": MappingProxyType({"reasoning_effort": "high", "version": _CODEX_VERSION}),
+        "claude-code": MappingProxyType({"version": _CLAUDE_CODE_VERSION}),
+    }
 )
+# Claude Code's default effort depends on the model, and Claude Opus 5 ran at
+# ``high``. Claude 5.5 or later runs at ``medium``, set explicitly so the effort
+# is visible in the Harbor command. Older models keep Claude Code's default.
+_CLAUDE_CODE_REASONING_EFFORT = "medium"
 # Allowlisted host variables that name a file or directory. A relative value keeps
 # its meaning by being anchored to the operator's working directory.
 _HARBOR_HOST_PATH_ENV_VARS = frozenset(
@@ -1336,6 +1354,16 @@ def _validated_pass_threshold(value: object) -> float:
     return normalized
 
 
+def _harbor_agent_kwargs(agent: str, model: str | None, env_mode: str) -> dict[str, str]:
+    """Return the Harbor agent kwargs SkillEvaluator pins for ``agent`` running ``model``."""
+    kwargs = dict(_HARBOR_AGENT_KWARGS.get(agent, {}))
+    if env_mode == ENV_MODE_LOCAL:
+        kwargs.pop("version", None)
+    if agent == "claude-code" and model and is_claude_5_5_or_later(model):
+        kwargs["reasoning_effort"] = _CLAUDE_CODE_REASONING_EFFORT
+    return kwargs
+
+
 def build_harbor_run_command(
     *,
     dataset_path: str | Path,
@@ -1422,9 +1450,8 @@ def build_harbor_run_command(
             ]
         )
     elif env_mode in {"docker", "gke"}:
-        from skillevaluator.tier3.harbor import CONTAINER_AGENT_IMPORT_PATHS
-
-        agent_import_path = agent_import_path or CONTAINER_AGENT_IMPORT_PATHS.get(agent)
+        default_import_paths = DOCKER_AGENT_IMPORT_PATHS if env_mode == "docker" else CONTAINER_AGENT_IMPORT_PATHS
+        agent_import_path = agent_import_path or default_import_paths.get(agent)
         command.extend(["--agent", agent_import_path or agent])
         command.extend(
             [
@@ -1434,7 +1461,7 @@ def build_harbor_run_command(
         )
     else:
         command.extend(["--agent", agent_import_path or agent, "--env", harbor_environment_type(env_mode)])
-    for name, value in sorted(_HARBOR_AGENT_KWARGS.get(agent, {}).items()):
+    for name, value in sorted(_harbor_agent_kwargs(agent, model, env_mode).items()):
         command.extend(["--ak", encode_environment_kwarg(name, value)])
     for name, value in sorted(validated_environment_kwargs.items()):
         if name == "allow_workload_identity":
@@ -2342,6 +2369,9 @@ def _gateway_anthropic_agent_credentials(
     A standalone Anthropic key keeps its native endpoint, so a native key is
     never silently sent to the shared gateway. An explicit base URL without a
     separate key selects another API root on the operator's gateway.
+
+    On the gateway route Claude Code stops sending pre-release request fields,
+    which gateways that forward to another provider reject with HTTP 400.
     """
     credentials = _independent_anthropic_agent_credentials(env_mode=env_mode, environment_kwargs=environment_kwargs)
     if credentials.get("ANTHROPIC_API_KEY", "").strip() or credentials.get("CLAUDE_CODE_USE_VERTEX", "").strip() == "1":
@@ -2351,7 +2381,11 @@ def _gateway_anthropic_agent_credentials(
         base_url = _normalize_anthropic_base_url(provider.base_url or "", variable="SKILL_EVAL_LLM_BASE_URL")
     if not base_url:
         raise ProviderConfigurationError("SKILL_EVAL_LLM_BASE_URL is required for the Claude gateway route.")
-    return {"ANTHROPIC_API_KEY": provider.api_key or "", "ANTHROPIC_BASE_URL": base_url}
+    return {
+        "ANTHROPIC_API_KEY": provider.api_key or "",
+        "ANTHROPIC_BASE_URL": base_url,
+        "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+    }
 
 
 def _judge_model_config(
@@ -2364,21 +2398,20 @@ def _judge_model_config(
         return {"enabled": False}
     for name in ("LLM_JUDGE_MODEL", "SKILL_EVAL_JUDGE_MODEL"):
         if model := provider_env.get(name):
-            return {
-                "enabled": True,
-                "provider": provider.provider,
-                "model": model,
-                "source": name,
-                "override_applied": True,
-            }
+            source = name
+            override_applied = True
+            break
+    else:
+        model = provider.model
+        source = "SKILL_EVAL_LLM_MODEL" if os.environ.get("SKILL_EVAL_LLM_MODEL", "").strip() else "provider default"
+        override_applied = False
     return {
         "enabled": True,
         "provider": provider.provider,
-        "model": provider.model,
-        "source": (
-            "SKILL_EVAL_LLM_MODEL" if os.environ.get("SKILL_EVAL_LLM_MODEL", "").strip() else "provider default"
-        ),
-        "override_applied": False,
+        "model": model,
+        "source": source,
+        "override_applied": override_applied,
+        "reasoning_effort": effective_reasoning_effort(provider.provider, model, JUDGE_REASONING_EFFORT),
     }
 
 
@@ -2796,6 +2829,15 @@ def _model_for_agent(
                 credentials = _independent_anthropic_agent_credentials()
                 if credentials.get("ANTHROPIC_API_KEY", "").strip() and not credentials.get("ANTHROPIC_BASE_URL"):
                     selected, source = CHAT_DEFAULT_ANTHROPIC, "native Anthropic agent default"
+        elif (
+            agent == "opencode"
+            and provider.provider == "openai"
+            and provider.model == CHAT_DEFAULT_OPENAI
+            and not os.environ.get("SKILL_EVAL_LLM_MODEL", "").strip()
+        ):
+            # The OpenAI chat default needs the Responses API for tool calls;
+            # an explicit SKILL_EVAL_LLM_MODEL still reaches OpenCode.
+            selected, source = OPENCODE_OPENAI_DEFAULT_MODEL, "native OpenAI agent default"
         else:
             selected, source = provider.model, "public provider default"
     if (
@@ -2814,7 +2856,7 @@ def _model_for_agent(
             "openai": "openai",
             "openai-compatible": "openai",
         }.get(provider.provider)
-        if namespace and source in {"public provider default", "openai-compatible agent default"}:
+        if namespace and source not in {"CLI", "evals/config.yml"}:
             selected = f"{namespace}/{selected}"
     return selected, source
 
