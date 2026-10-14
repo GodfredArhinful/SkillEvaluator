@@ -262,7 +262,9 @@ def test_validate_help_exposes_optional_agent_runtime_preflight() -> None:
         ("--no-agent-runtime-preflight", False),
     ],
 )
-def test_validate_forwards_agent_runtime_preflight_override(monkeypatch, flag: str, expected: bool) -> None:
+def test_validate_forwards_agent_runtime_preflight_override(
+    monkeypatch, tmp_path: Path, flag: str, expected: bool
+) -> None:
     from skillevaluator import cli as cli_module
     from skillevaluator.models.result import ValidationResult
 
@@ -288,6 +290,8 @@ def test_validate_forwards_agent_runtime_preflight_override(monkeypatch, flag: s
             flag,
             "--checks",
             "schema",
+            "--output-dir",
+            str(tmp_path / "reports"),
         ],
     )
 
@@ -404,7 +408,7 @@ def test_validate_default_reports_do_not_write_into_authored_sibling_skill(
 
     result = CliRunner().invoke(
         cli,
-        ["validate", "simple", "--no-llm", "--no-tier2", "--checks", "schema", "--report", "json"],
+        ["validate", "--no-tier3", "simple", "--no-llm", "--no-tier2", "--checks", "schema", "--report", "json"],
     )
 
     output_root = tmp_path / "simple-reports"
@@ -436,7 +440,7 @@ def test_validate_default_in_skill_reports_do_not_mutate_publication_target(
 
     result = CliRunner().invoke(
         cli,
-        ["validate", ".", "--no-llm", "--no-tier2", "--checks", "schema", "--report", "json"],
+        ["validate", "--no-tier3", ".", "--no-llm", "--no-tier2", "--checks", "schema", "--report", "json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -463,7 +467,7 @@ def test_validate_default_in_skill_reports_refuses_unowned_sibling(
 
     result = CliRunner().invoke(
         cli,
-        ["validate", ".", "--no-llm", "--no-tier2", "--checks", "schema", "--report", "json"],
+        ["validate", "--no-tier3", ".", "--no-llm", "--no-tier2", "--checks", "schema", "--report", "json"],
     )
 
     assert result.exit_code != 0
@@ -489,6 +493,7 @@ def test_validate_rejects_case_alias_output_inside_publication_target(
         cli,
         [
             "validate",
+            "--no-tier3",
             str(skill),
             "--no-llm",
             "--no-tier2",
@@ -518,6 +523,7 @@ def test_validate_rejects_arbitrary_in_skill_report_output_before_validation(tmp
         cli,
         [
             "validate",
+            "--no-tier3",
             str(skill),
             "--no-llm",
             "--no-tier2",
@@ -1686,7 +1692,7 @@ def test_validate_catalog_default_reports_cannot_overwrite_reports_skill(
 
     result = CliRunner().invoke(
         cli,
-        ["validate", ".", "--no-llm", "--no-tier2", "--checks", "schema"],
+        ["validate", "--no-tier3", ".", "--no-llm", "--no-tier2", "--checks", "schema"],
     )
 
     assert result.exit_code == 0, result.output
@@ -1885,6 +1891,7 @@ def test_validate_quiet_handles_oversized_tier3_skip_reason(
         cli,
         [
             "validate",
+            "--no-autopilot",
             str(FIXTURE.resolve()),
             "--no-llm",
             "--no-tier2",
@@ -1926,6 +1933,7 @@ def test_validate_quiet_renders_untrusted_skip_reason_as_bounded_inert_text(
         cli,
         [
             "validate",
+            "--no-autopilot",
             str(FIXTURE.resolve()),
             "--no-llm",
             "--no-tier2",
@@ -2122,6 +2130,7 @@ def test_validate_no_dedup_keeps_exit_success_but_publication_is_incomplete(tmp_
         cli,
         [
             "validate",
+            "--no-tier3",
             str(FIXTURE.resolve()),
             "--no-llm",
             "--no-dedup",
@@ -2167,6 +2176,7 @@ def test_validate_tiers_selector_does_not_create_publication_waiver(monkeypatch,
         cli,
         [
             "validate",
+            "--no-autopilot",
             str(FIXTURE.resolve()),
             "--no-llm",
             "--tiers",
@@ -2217,6 +2227,7 @@ def test_validate_nonblocking_dedup_failure_does_not_certify_publication(monkeyp
         cli,
         [
             "validate",
+            "--no-tier3",
             str(FIXTURE.resolve()),
             "--no-llm",
             "--checks",
@@ -2389,6 +2400,7 @@ def test_validate_block_on_agent_eval_gates_complete_tier3_verdict(
         cli,
         [
             "validate",
+            "--no-autopilot",
             str(FIXTURE),
             "--no-llm",
             "--no-tier2",
