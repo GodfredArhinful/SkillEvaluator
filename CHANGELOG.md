@@ -74,6 +74,14 @@ All notable changes to SkillEvaluator are documented in this file.
   `reasoning_effort=medium`.
   SkillSpector stays on `claude-opus-5` and `us.anthropic.claude-opus-5`, which
   SkillSpector v2.12.0 supports.
+- Docker Claude Code and Codex containers no longer get the distribution
+  `nodejs` and `npm` packages from agent setup, except on Alpine images. On
+  Debian-based images, including the default eval image, those packages also
+  provided `npx`, `gcc`, `g++`, and `make`. Claude Code containers now have no
+  Node.js unless the image provides it, and Codex's own Node.js is on `PATH`
+  only for the Codex process. Skills whose scripts, tasks, or stdio MCP servers
+  need these tools must install them through `scripts/apt-packages.txt` or a
+  custom `evals/environment/Dockerfile`.
 
 ### Fixed
 
@@ -89,6 +97,10 @@ All notable changes to SkillEvaluator are documented in this file.
   With no judge or chat model configured, it used to request an OpenAI model
   from Anthropic, Bedrock, NVIDIA Build and gateways. The unused host-side
   `llm_judge.DEFAULT_JUDGE_MODEL` constant is removed.
+- Fixed Docker Codex and Claude Code setup wasting its timeout installing
+  distribution Node/npm before Harbor's own installers. Native, gateway Codex,
+  and NVIDIA Build agents now provision Node/npm only on the installer branches
+  that need them, while preserving installed-agent and version-pin checks.
 - Preserved multiline skill descriptions when saving and loading Tier 2
   embedding catalogs. Descriptions can contain line breaks and tabs, while
   catalog identifiers and other control characters remain strictly validated.

@@ -22,11 +22,11 @@ from urllib.parse import urlsplit
 
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.agents.installed.claude_code import ClaudeCode
-from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.opencode import OpenCode
 from harbor.models.trial.paths import EnvironmentPaths
 
 from skillevaluator.provider_config import is_claude_5_5_or_later, is_gpt6_model
+from skillevaluator.tier3.harbor.installed_agents import SkillEvaluatorClaudeCode, SkillEvaluatorCodex
 from skillevaluator.tier3.harbor.nvidia_build_bridge import (
     MAX_REQUESTS_PER_BRIDGE,
     RunningBridge,
@@ -169,7 +169,7 @@ class SkillEvaluatorLocalClaudeCode(ClaudeCode):
         )
 
 
-class SkillEvaluatorGatewayCodex(Codex):
+class SkillEvaluatorGatewayCodex(SkillEvaluatorCodex):
     """Use an explicit Responses gateway without truncating its catalog model ID."""
 
     def _build_effective_config(self, openai_base_url: str | None = None) -> dict[str, Any]:
@@ -693,7 +693,7 @@ class _NvidiaBuildBridgeAgent:
                         raise
 
 
-class SkillEvaluatorNvidiaBuildCodex(_NvidiaBuildBridgeAgent, Codex):
+class SkillEvaluatorNvidiaBuildCodex(_NvidiaBuildBridgeAgent, SkillEvaluatorCodex):
     """Stock Codex CLI routed through the in-trial NVIDIA Build bridge."""
 
     _BRIDGE_CLIENT_ENV_UNSET = ("NVIDIA_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE")
@@ -739,7 +739,7 @@ class SkillEvaluatorNvidiaBuildCodex(_NvidiaBuildBridgeAgent, Codex):
         return _rewrite_launcher_segment(command, lambda text: _CODEX_MODEL_ARG_RE.sub(replace, text))
 
 
-class SkillEvaluatorNvidiaBuildClaudeCode(_NvidiaBuildBridgeAgent, ClaudeCode):
+class SkillEvaluatorNvidiaBuildClaudeCode(_NvidiaBuildBridgeAgent, SkillEvaluatorClaudeCode):
     """Stock Claude Code CLI routed through the in-trial NVIDIA Build bridge."""
 
     def _bridge_client_environment(self) -> dict[str, str]:
