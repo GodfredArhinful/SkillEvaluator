@@ -13,6 +13,17 @@ All notable changes to SkillEvaluator are documented in this file.
   without rerunning the scan. The version is shown even when the report omits
   its timestamp.
 
+### Changed
+
+- Docker Claude Code and Codex containers no longer get the distribution
+  `nodejs` and `npm` packages from agent setup, except on Alpine images. On
+  Debian-based images, including the default eval image, those packages also
+  provided `npx`, `gcc`, `g++`, and `make`. Claude Code containers now have no
+  Node.js unless the image provides it, and Codex's own Node.js is on `PATH`
+  only for the Codex process. Skills whose scripts, tasks, or stdio MCP servers
+  need these tools must install them through `scripts/apt-packages.txt` or a
+  custom `evals/environment/Dockerfile`.
+
 ### Fixed
 
 - Fixed Docker Codex and Claude Code setup wasting its timeout installing
