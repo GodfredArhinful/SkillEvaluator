@@ -305,8 +305,8 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Fixed
 
-- Preserve missing Tier 3 token counters as `null` in canonical JSON exports
-  instead of reporting unmeasured usage as zero.
+- Omit unmeasured Tier 3 token usage from canonical JSON exports instead of
+  reporting it as zero.
 - Keep dashboard comparisons unavailable for contradictory trial identities or
   invalid coverage counts, and enforce the documented 16 MB browser upload limit.
 - Report non-string YAML keys as validation errors in skills, rules, workflows,
