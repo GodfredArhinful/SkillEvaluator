@@ -13,14 +13,14 @@ from skillevaluator.validators.dependencies import DependencySecurityValidator
 
 def audit(tmp_path, text, monkeypatch, *, exit_code=0, output=None, available=True):
     target = tmp_path / "pyproject.toml"
-    target.write_text(text)
+    target.write_text(text, encoding="utf-8")
     calls = []
     monkeypatch.setattr(type(Tools.pip_audit), "is_available", property(lambda _self: available))
 
     def run(args, **kwargs):
         assert "--local" not in args
         assert "--no-deps" in args and "--disable-pip" in args
-        requirements = Path(args[args.index("-r") + 1]).read_text().splitlines()
+        requirements = Path(args[args.index("-r") + 1]).read_text(encoding="utf-8").splitlines()
         calls.extend(requirements)
         dependencies = [
             {"name": pin.split("==")[0].lower(), "version": pin.split("==")[1], "vulns": []} for pin in requirements
@@ -67,6 +67,21 @@ def test_unresolved_declarations_are_incomplete(tmp_path, monkeypatch, declarati
     ],
 )
 def test_invalid_or_dynamic_metadata_is_incomplete(tmp_path, monkeypatch, text):
+    result, calls = audit(tmp_path, text, monkeypatch)
+    assert result.status == "incomplete"
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "x = " + "[" * 5000 + "]" * 5000,
+        "[project]\ndependencies=[\"idna==3.10; python_version ~= '3'\"]",
+        '[project]\ndependencies=["idna==3.10; ' + "(" * 3000 + "python_version > '3'" + ")" * 3000 + '"]',
+    ],
+    ids=["deeply-nested-toml", "unevaluable-marker", "deeply-nested-marker"],
+)
+def test_malformed_target_metadata_is_incomplete_not_a_crash(tmp_path, monkeypatch, text):
     result, calls = audit(tmp_path, text, monkeypatch)
     assert result.status == "incomplete"
     assert not calls

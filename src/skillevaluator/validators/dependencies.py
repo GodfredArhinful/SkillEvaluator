@@ -142,7 +142,7 @@ class DependencySecurityValidator(ValidatorBase):
             with SecureRoot(pyproject.parent) as root:
                 raw, _ = root.read_bytes(Path(pyproject.name), 1024 * 1024)
             data = tomllib.loads(raw.decode("utf-8"))
-        except (OSError, SecurePathError, UnicodeError, tomllib.TOMLDecodeError):
+        except (OSError, SecurePathError, UnicodeError, tomllib.TOMLDecodeError, RecursionError):
             incomplete("cannot read a bounded regular TOML file")
             return result
 
@@ -180,7 +180,7 @@ class DependencySecurityValidator(ValidatorBase):
                     if not isinstance(declaration, str) or "\n" in declaration or "\r" in declaration:
                         raise InvalidRequirement("invalid declaration")
                     requirement = Requirement(declaration)
-                except InvalidRequirement:
+                except (InvalidRequirement, RecursionError):
                     incomplete(f"{label}: invalid requirement")
                     continue
                 if requirement.url:
@@ -189,7 +189,13 @@ class DependencySecurityValidator(ValidatorBase):
                 if requirement.marker:
                     # Audit every optional group, evaluating `extra` in its group context.
                     extra = group.removeprefix("optional group ") if group.startswith("optional group ") else ""
-                    if not requirement.marker.evaluate({"extra": extra}):
+                    try:
+                        # Unevaluable markers raise ValueError subclasses such as UndefinedComparison.
+                        marker_matches = requirement.marker.evaluate({"extra": extra})
+                    except (ValueError, RecursionError):
+                        incomplete(f"{label}: environment marker cannot be evaluated")
+                        continue
+                    if not marker_matches:
                         result.add_message(f"pyproject.toml: {label} skipped (marker does not match scanner platform)")
                         continue
                 specifiers = list(requirement.specifier)
