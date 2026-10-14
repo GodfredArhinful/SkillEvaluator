@@ -22,14 +22,14 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
-from harbor.agents.installed.claude_code import ClaudeCode
 from harbor.agents.installed.opencode import OpenCode
 from harbor.agents.model_connection import ResolvedModelConnection, without_inferred_endpoint
 from harbor.models.trial.paths import EnvironmentPaths
 from harbor.utils.env import parse_bool_env_value
 
 from skillevaluator.provider_config import is_claude_5_5_or_later, is_gpt6_model
-from skillevaluator.tier3.harbor.installed_agents import SkillEvaluatorClaudeCode, SkillEvaluatorCodex
+from skillevaluator.tier3.harbor.installed_agents import SkillEvaluatorClaudeCode as _InstalledClaudeCode
+from skillevaluator.tier3.harbor.installed_agents import SkillEvaluatorCodex
 from skillevaluator.tier3.harbor.nvidia_build_bridge import (
     MAX_REQUESTS_PER_BRIDGE,
     RunningBridge,
@@ -135,8 +135,12 @@ def _rewrite_launcher_segment(command: str, rewrite: Callable[[str], str]) -> st
     return f"{rewrite(launcher)}{separator}{prompt}"
 
 
-class SkillEvaluatorClaudeCode(ClaudeCode):
-    """Wrap Claude Code to preserve rich MCP server declarations and Vertex AI routing."""
+class SkillEvaluatorClaudeCode(_InstalledClaudeCode):
+    """Wrap Claude Code to preserve rich MCP server declarations and Vertex AI routing.
+
+    It extends the installed-agent wrapper, so Harbor's installer still skips
+    the distribution Node/npm packages that the native installer does not need.
+    """
 
     def _env_sources(self) -> tuple[Mapping[str, str], ...]:
         """Environment sources in runtime precedence order, safe for partially initialized instances."""

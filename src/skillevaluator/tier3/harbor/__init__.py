@@ -36,10 +36,12 @@ CONTAINER_AGENT_IMPORT_PATHS = {
 }
 
 # Docker wrappers retain Harbor's installers while avoiding redundant Node/npm
-# packages on the branches that bootstrap their own runtime.
+# packages on the branches that bootstrap their own runtime. Claude Code uses the
+# container wrapper, which builds on that installer fix and adds Vertex AI
+# routing and rich MCP server declarations.
 DOCKER_AGENT_IMPORT_PATHS = {
     "codex": "skillevaluator.tier3.harbor.installed_agents:SkillEvaluatorCodex",
-    "claude-code": "skillevaluator.tier3.harbor.installed_agents:SkillEvaluatorClaudeCode",
+    "claude-code": CONTAINER_AGENT_IMPORT_PATHS["claude-code"],
 }
 
 HARBOR_AGENTS_SUPPORTED = frozenset(
