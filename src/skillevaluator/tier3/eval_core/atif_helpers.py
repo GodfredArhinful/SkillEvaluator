@@ -17,7 +17,11 @@ import re
 from typing import Any
 
 from skillevaluator.evidence import evidence_ref_identity
-from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import atif_content_has_text, atif_content_text, normalized_tool_call_is_error
+from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import (
+    atif_content_has_text,
+    atif_content_text,
+    normalized_tool_call_is_error,
+)
 from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import (
     iter_normalized_tool_calls as iter_tool_calls,
 )
