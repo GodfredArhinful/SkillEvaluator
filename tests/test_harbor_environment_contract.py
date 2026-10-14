@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from skillevaluator.tier3.harbor import runner
+from skillevaluator.tier3.harbor import DOCKER_AGENT_IMPORT_PATHS, runner
 from skillevaluator.tier3.harbor.runner import build_harbor_run_command
 from skillevaluator.tier3.harbor.secure_docker_environment import NVIDIA_BUILD_STDIN_SENTINEL
 
@@ -98,7 +98,8 @@ def test_kata_runs_the_hardened_kata_backend() -> None:
     )
 
     assert command[command.index("--env") + 1] == SECURE_KATA_ENV_IMPORT_PATH
-    assert command[command.index("--agent") + 1] == "codex"
+    # Kata runs the Docker agent wrappers, which skip the redundant Node/npm bootstrap.
+    assert command[command.index("--agent") + 1] == DOCKER_AGENT_IMPORT_PATHS["codex"]
     assert command[command.index("--ak") + 1] == f"reasoning_effort={json.dumps('high')}"
     assert _environment_kwargs(command) == [f"kata_runtime={json.dumps('kata-clh')}"]
 
