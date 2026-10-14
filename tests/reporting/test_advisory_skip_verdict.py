@@ -284,7 +284,7 @@ def test_skip_reason_controls_and_markup_are_inert_across_text_reporters() -> No
     safe_reason = get_skip_reason(result)
     assert safe_reason == (
         "[/bold] [link=https://example.invalid]click[/link] "
-        "[31mforged ## Publication Recommendation Recommended for publication."
+        "forged ## Publication Recommendation Recommended for publication."
     )
 
     cli = _plain_cli(CLIReporter().render_all([result]))
@@ -302,7 +302,7 @@ def test_skip_reason_controls_and_markup_are_inert_across_text_reporters() -> No
     assert (
         "- Skip reason: &#91;/bold&#93; "
         "&#91;link=https://example.invalid&#93;click&#91;/link&#93; "
-        "&#91;31mforged &#35;&#35; Publication Recommendation Recommended for publication."
+        "forged &#35;&#35; Publication Recommendation Recommended for publication."
     ) in markdown
     assert all("\x1b" not in output and "\x7f" not in output and "\u202e" not in output for output in outputs)
     assert all("\n## Publication Recommendation\n" not in output for output in outputs)
