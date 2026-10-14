@@ -22,6 +22,10 @@ def audit(tmp_path, text, monkeypatch, *, exit_code=0, output=None, available=Tr
         assert "--no-deps" in args and "--disable-pip" in args
         requirements = Path(args[args.index("-r") + 1]).read_text(encoding="utf-8").splitlines()
         calls.extend(requirements)
+        names = [pin.split("==")[0].lower() for pin in requirements]
+        if len(names) != len(set(names)):
+            # Like pip-audit, reject one requirements file that names a package twice.
+            return ToolResult(True, "", "duplicate requirements", 1)
         dependencies = [
             {"name": pin.split("==")[0].lower(), "version": pin.split("==")[1], "vulns": []} for pin in requirements
         ]
@@ -43,6 +47,17 @@ def test_audits_target_pins_and_optional_groups(tmp_path, monkeypatch):
     assert calls == ["Requests==2.32.5", "idna==3.10"]
     assert result.metadata["dependency_coverage"]["audited_pins"] == calls
     assert result.metadata["dependency_coverage"]["transitive_dependencies"] == "not audited"
+
+
+def test_conflicting_group_pins_are_each_audited(tmp_path, monkeypatch):
+    result, calls = audit(
+        tmp_path,
+        '[project]\ndependencies=["idna==3.10"]\n[project.optional-dependencies]\nlegacy=["idna==3.7"]',
+        monkeypatch,
+    )
+    assert result.status == "passed"
+    assert sorted(calls) == ["idna==3.10", "idna==3.7"]
+    assert result.metadata["dependency_coverage"]["audited_pins"] == ["idna==3.10", "idna==3.7"]
 
 
 @pytest.mark.parametrize(
