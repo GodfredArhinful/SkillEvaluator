@@ -281,6 +281,33 @@ def _extract_pod_missing_exec_detail(exc: BaseException) -> str | None:
     return None
 
 
+class _ExecDispatchRecord:
+    """Count exec stream handshakes for one exec() attempt.
+
+    The Kubernetes exec API starts the command only after the WebSocket
+    handshake succeeds, so an attempt whose handshakes all failed never ran
+    the command and is safe to retry.
+    """
+
+    __slots__ = ("attempted", "established")
+
+    def __init__(self) -> None:
+        self.attempted = 0
+        self.established = 0
+
+    @property
+    def failed_before_dispatch(self) -> bool:
+        return self.attempted > 0 and self.established == 0
+
+
+# A mutable record per exec() attempt; asyncio.to_thread copies the context, so
+# the wrapped API call updates the same record object the caller holds.
+_EXEC_DISPATCH_RECORD: contextvars.ContextVar[_ExecDispatchRecord | None] = contextvars.ContextVar(
+    "skillevaluator_gke_exec_dispatch_record",
+    default=None,
+)
+
+
 def _ensure_default_exec_container_routing(api: Any, *, default_container: str = "main") -> None:
     """Ensure untargeted connect_get_namespaced_pod_exec calls default to the main task container."""
     orig = getattr(api, "connect_get_namespaced_pod_exec", None)
@@ -290,8 +317,11 @@ def _ensure_default_exec_container_routing(api: Any, *, default_container: str =
     def _wrapped_exec(*args: Any, **kwargs: Any) -> Any:
         if kwargs.get("container") is None:
             kwargs["container"] = default_container
+        record = _EXEC_DISPATCH_RECORD.get()
+        if record is not None:
+            record.attempted += 1
         try:
-            return orig(*args, **kwargs)
+            response = orig(*args, **kwargs)
         except Exception as exc:
             missing_detail = _extract_pod_missing_exec_detail(exc)
             if missing_detail is not None:
@@ -301,6 +331,9 @@ def _ensure_default_exec_container_routing(api: Any, *, default_container: str =
                     f"Pod {pod_name} in namespace {namespace} no longer exists (deleted or preempted): {missing_detail}"
                 ) from exc
             raise
+        if record is not None:
+            record.established += 1
+        return response
 
     _wrapped_exec._skillevaluator_default_container_wrapped = True  # type: ignore[attr-defined]
     _wrapped_exec.__self__ = getattr(orig, "__self__", api)  # type: ignore[attr-defined]
@@ -1157,7 +1190,7 @@ class SkillEvaluatorGKEEnvironment(GKEEnvironment):
         user: str | int | None = None,
         service: str | None = None,
     ) -> ExecResult:
-        """Refresh ADC-sourced Vertex OpenAPI credentials and retry transient kubelet exec errors."""
+        """Refresh ADC-sourced Vertex OpenAPI credentials and retry kubelet errors raised before dispatch."""
         merged = dict(self._merge_env(env) or {})
         fresh_token = await asyncio.to_thread(
             refresh_host_vertex_adc_environment,
@@ -1186,6 +1219,8 @@ class SkillEvaluatorGKEEnvironment(GKEEnvironment):
 
         result: ExecResult | None = None
         for attempt in range(_MAX_TRANSIENT_EXEC_ATTEMPTS):
+            dispatch = _ExecDispatchRecord()
+            dispatch_token = _EXEC_DISPATCH_RECORD.set(dispatch)
             try:
                 result = await super().exec(
                     command=command,
@@ -1196,11 +1231,12 @@ class SkillEvaluatorGKEEnvironment(GKEEnvironment):
                     **({"service": service} if service is not None else {}),
                 )
             except GKEExecStreamClosedError as exc:
-                if attempt < _MAX_TRANSIENT_EXEC_ATTEMPTS - 1:
-                    await asyncio.sleep(1.5 * (attempt + 1))
-                    continue
+                # The stream was open, so the command may have run before its
+                # status was lost. Replaying it could repeat its side effects.
                 redacted_msg = _redact_exec_stderr(str(exc), merged) or str(exc)
                 raise GKEExecStreamClosedError(redacted_msg) from None
+            finally:
+                _EXEC_DISPATCH_RECORD.reset(dispatch_token)
             if (
                 result.return_code != 0
                 and result.stderr
@@ -1208,7 +1244,13 @@ class SkillEvaluatorGKEEnvironment(GKEEnvironment):
             ):
                 redacted_msg = _redact_exec_stderr(result.stderr, merged) or result.stderr
                 raise GKEPodNotFoundError(redacted_msg)
-            if result.return_code == 0 or not _is_transient_kubelet_exec_error(result.stderr):
+            # Retry only a kubelet error from an attempt whose exec handshake
+            # never completed; a dispatched command's own stderr can match too.
+            if (
+                result.return_code == 0
+                or not dispatch.failed_before_dispatch
+                or not _is_transient_kubelet_exec_error(result.stderr)
+            ):
                 break
             if attempt < _MAX_TRANSIENT_EXEC_ATTEMPTS - 1:
                 await asyncio.sleep(1.5 * (attempt + 1))
