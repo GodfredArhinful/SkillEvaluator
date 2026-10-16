@@ -145,9 +145,10 @@ def _pick_best_agent(
         rank = _canonical_agent_rank_from_info(ranking_data)
         if rank is None:
             continue
-        # Overall scores from different metric sets cannot be ranked against
-        # each other.
-        scored_metric_sets.add(frozenset(standard_metrics))
+        # Overall scores from different standard metric sets cannot be ranked
+        # against each other. Custom-only agents rank by their grader's overall.
+        if standard_metrics:
+            scored_metric_sets.add(frozenset(standard_metrics))
         if len(scored_metric_sets) > 1:
             return ""
         if best_rank is None or rank > best_rank:

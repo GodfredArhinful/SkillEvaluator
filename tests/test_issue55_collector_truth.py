@@ -29,6 +29,7 @@ from skillevaluator.tier3.harbor.collector import (
 )
 from skillevaluator.tier3.harbor.metrics import (
     CUSTOM_ONLY_METRIC_SET,
+    CUSTOM_SCORE_POLICY,
     DEFAULT_METRIC_SET,
     DEFAULT_METRICS,
     DEFAULT_SCORE_POLICY,
@@ -398,6 +399,52 @@ def test_multi_agent_collection_rejects_incomparable_score_policies(tmp_path: Pa
     assert result["score_policy"] == "mixed-score-policies"
     assert "comparison" not in result
     assert any("score policies" in error.lower() for error in result["execution_errors"])
+
+
+def test_multi_agent_collection_ranks_custom_only_agent_against_standard_agent(tmp_path: Path) -> None:
+    rewards = {
+        "opencode": {
+            "entry_id": "case-001",
+            "metric_set": DEFAULT_METRIC_SET,
+            "score_policy": DEFAULT_SCORE_POLICY,
+            **dict.fromkeys(DEFAULT_METRICS, 0.8),
+            "overall": 0.8,
+        },
+        "codex": {
+            "entry_id": "case-001",
+            "metric_set": CUSTOM_ONLY_METRIC_SET,
+            "overall": 0.9,
+            "domain_quality": 0.9,
+        },
+    }
+    for agent, reward in rewards.items():
+        job_dir = tmp_path / "jobs" / f"demo-{agent}-with"
+        _write_reward(job_dir, "case-001__attempt", reward)
+        _write_complete_job_result(job_dir, ["case-001__attempt"])
+
+    result = collect_harbor_results(
+        skill_name="demo",
+        agents=list(rewards),
+        output_dir=tmp_path / "results",
+        jobs_dir=tmp_path / "jobs",
+        skip_baseline=True,
+        expected_cases=1,
+        expected_case_ids=["case-001"],
+        expected_trials=1,
+    )
+
+    assert result["execution_status"] == "succeeded"
+    assert result["score_policy"] == result["attempt_policy"]["score_policy"] == DEFAULT_SCORE_POLICY
+    assert result["agents"]["codex"]["score_policy_with_skill"] == CUSTOM_SCORE_POLICY
+    assert "comparison" in result
+    for agents in (result["agents"], report_data.load_agent_data(tmp_path / "results")):
+        payload = build_agent_eval_payload("demo", agents, attempt_policy=result["attempt_policy"], use_llm_judge=False)
+        assert payload is not None
+        assert payload["execution_status"] == "succeeded"
+        assert payload["agents"]["opencode"]["with_skill"] == 0.8
+        assert payload["agents"]["codex"]["with_skill"] == 0.9
+        assert payload["best_agent"] == "codex"
+        assert report._pick_best_agent(agents) == "codex"
 
 
 def test_failed_later_agent_does_not_relabel_a_successful_legacy_agent(tmp_path: Path) -> None:

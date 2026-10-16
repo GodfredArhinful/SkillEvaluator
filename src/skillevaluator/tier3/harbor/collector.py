@@ -32,6 +32,7 @@ from skillevaluator.tier3.eval_core.checks import check_negative_case
 from skillevaluator.tier3.eval_core.codex_tool_call_normalizer import atif_content_text
 from skillevaluator.tier3.harbor.metrics import (
     CUSTOM_ONLY_METRIC_SET,
+    CUSTOM_SCORE_POLICY,
     DEFAULT_METRIC_SET,
     DEFAULT_METRICS,
     DEFAULT_SCORE_POLICY,
@@ -6927,7 +6928,10 @@ def collect_harbor_results(
         for info in all_results["agents"].values()
         if info.get("execution_status") == "succeeded" and info.get("score_policy_with_skill")
     }
-    run_policy_conflict = len(scored_policies) > 1
+    # Custom-only agents publish their grader's own overall and rank against
+    # standard agents, so only standard score policies can conflict.
+    standard_policies = scored_policies - {CUSTOM_SCORE_POLICY}
+    run_policy_conflict = len(standard_policies) > 1
     if run_policy_conflict:
         all_results["score_policy"] = "mixed-score-policies"
         all_results["attempt_policy"]["score_policy"] = "mixed-score-policies"
@@ -6935,9 +6939,11 @@ def collect_harbor_results(
             "overall unavailable: conflicting score policies across agents"
         )
     elif scored_policies:
-        score_policy = next(iter(scored_policies))
+        score_policy = next(iter(standard_policies or scored_policies))
         scored_agent = next(
-            info for info in all_results["agents"].values() if info.get("execution_status") == "succeeded"
+            info
+            for info in all_results["agents"].values()
+            if info.get("execution_status") == "succeeded" and info.get("score_policy_with_skill") == score_policy
         )
         selected_metrics = tuple(metric for metric in DEFAULT_METRICS if metric in scored_agent["with_skill"])
         all_results["metric_set"] = (
@@ -6960,7 +6966,7 @@ def collect_harbor_results(
     if run_policy_conflict:
         _fail_execution_with_error(
             top_execution,
-            "Conflicting score policies across agents: " + ", ".join(sorted(scored_policies)),
+            "Conflicting score policies across agents: " + ", ".join(sorted(standard_policies)),
         )
     all_results.update(top_execution)
     if top_execution["execution_errors"]:

@@ -610,8 +610,13 @@ def build_agent_eval_payload(
         metrics_for_condition,
     )
 
-    metrics = metrics_for_agents(agents)
-    policy_metrics = _policy_metrics_from_agents(agents, metrics)
+    # Custom-only agents publish their grader's own overall under the custom
+    # policy and rank against standard agents. The run-level policy, its
+    # conflict checks and the metric-set comparison cover standard agents.
+    custom_only_agents = {name for name, info in agents.items() if _is_custom_only_agent(info)}
+    policy_agents = {name: info for name, info in agents.items() if name not in custom_only_agents} or agents
+    metrics = metrics_for_agents(policy_agents)
+    policy_metrics = _policy_metrics_from_agents(policy_agents, metrics)
 
     from skillevaluator.tier3.harbor.metrics import (
         CUSTOM_SCORE_POLICY,
@@ -625,7 +630,7 @@ def build_agent_eval_payload(
     if not attempt_policy:
         policy.pop("score_definition", None)
         policy.pop("score_policy", None)
-    recorded_policies = _recorded_score_policies(agents)
+    recorded_policies = _recorded_score_policies(policy_agents)
     stored_policy = policy.get("score_policy")
     if isinstance(stored_policy, str) and stored_policy.strip():
         policy["score_policy"] = stored_policy.strip()
@@ -655,7 +660,7 @@ def build_agent_eval_payload(
             metrics_for_condition(info, "with_skill"),
             metrics_for_condition(info, "without_skill"),
             model,
-            policy["score_policy"],
+            CUSTOM_SCORE_POLICY if name in custom_only_agents else policy["score_policy"],
         )
 
     if not agent_payloads:
@@ -663,8 +668,10 @@ def build_agent_eval_payload(
 
     scored_metric_sets = {
         frozenset(agent["metrics_with_skill"])
-        for agent in agent_payloads.values()
-        if agent["execution_status"] == "succeeded" and agent["with_skill"] is not None
+        for name, agent in agent_payloads.items()
+        if name not in custom_only_agents
+        and agent["execution_status"] == "succeeded"
+        and agent["with_skill"] is not None
     }
     conflicting_metric_sets = len(scored_metric_sets) > 1
     if conflicting_metric_sets and not conflicting_policies:
@@ -1308,6 +1315,17 @@ def _policy_metrics_from_agents(
         )
     )
     return available or tuple(metrics)
+
+
+def _is_custom_only_agent(info: dict[str, Any]) -> bool:
+    """Return whether an agent's with-skill condition is scored only by its custom grader."""
+    from skillevaluator.tier3.harbor.metrics import CUSTOM_SCORE_POLICY
+    from skillevaluator.tier3.harbor.report_data import metrics_for_condition
+
+    recorded = info.get("score_policy_with_skill")
+    if isinstance(recorded, str) and recorded.strip():
+        return recorded.strip() == CUSTOM_SCORE_POLICY
+    return not metrics_for_condition(info, "with_skill")
 
 
 def _recorded_score_policies(agents: dict[str, dict[str, Any]]) -> set[str]:
