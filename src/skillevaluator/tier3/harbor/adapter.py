@@ -36,6 +36,7 @@ from urllib.parse import unquote
 
 from skillevaluator.publication_identity import (
     publication_source_entry_is_excluded,
+    publication_source_link_is_generated,
     publication_source_path_is_excluded,
 )
 from skillevaluator.tier3.case_ids import (
@@ -834,6 +835,7 @@ def _runtime_skill_copy_ignore(skill_root: Path, excluded_roots: Sequence[Path] 
             candidate = current / name
             if (
                 publication_source_entry_is_excluded(skill_root, candidate)
+                or publication_source_link_is_generated(skill_root, candidate)
                 or _is_skill_evals_path(candidate, skill_root)
                 or _path_is_excluded(candidate, excluded_roots)
                 or _authenticated_generated_output_ancestor(

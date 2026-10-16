@@ -4928,3 +4928,31 @@ def test_staged_digest_excluded_task_inputs_do_not_bind_publication(
     assert not _runtime_context_is_bound_to_publication_target(
         skill, tasks, reference_skills_dir=None, workspace_skill_paths=[]
     )
+
+
+@pytest.mark.parametrize("link_name", [".git", "results", "__pycache__", "scripts/__pycache__"])
+def test_runtime_projection_skips_linked_generated_entries(tmp_path: Path, link_name: str) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    skill = tmp_path / "simple"
+    (skill / "scripts").mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: simple\ndescription: Demo skill.\n---\n", encoding="utf-8")
+    (skill / "scripts" / "run.sh").write_text("echo ok\n", encoding="utf-8")
+    (skill / "evals").mkdir()
+    (skill / "evals" / "evals.json").write_text(
+        json.dumps([{"id": "case-001", "question": "Summarize.", "ground_truth": "x"}]),
+        encoding="utf-8",
+    )
+    try:
+        os.symlink(outside, skill / link_name, target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    with private_evaluator_skill_snapshot(skill) as evaluator_skill:
+        tasks = generate_harbor_tasks(skill, tmp_path / "tasks", evaluator_skill_path=evaluator_skill)
+
+    staged = tasks[0] / "environment" / "skills" / "simple"
+    assert (staged / "SKILL.md").is_file()
+    assert (staged / "scripts" / "run.sh").is_file()
+    assert not os.path.lexists(staged / link_name)

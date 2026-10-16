@@ -182,6 +182,29 @@ def publication_source_entry_is_excluded(source: Path, candidate: Path) -> bool:
         return False
 
 
+def publication_source_link_is_generated(source: Path, candidate: Path) -> bool:
+    """Return whether a link entry uses a name that v2 excludes at its position.
+
+    The digest refuses trees that contain links, but runtime projections still
+    skip a linked ``.git``, ``results`` or similar generated entry instead of
+    failing on it, because it never holds author-owned skill content.
+    """
+    try:
+        root = _absolute_lexical(source.expanduser())
+        path = _absolute_lexical(candidate.expanduser())
+        parts = path.relative_to(root).parts
+        if not parts or not _is_link(path.lstat()):
+            return False
+    except (OSError, RuntimeError, ValueError):
+        return False
+    name = parts[-1]
+    return bool(
+        name in _PUBLICATION_EXCLUDED_DIR_NAMES
+        or (len(parts) == 1 and (name in _PUBLICATION_EXCLUDED_ROOT_DIRS or name in _PUBLICATION_EXCLUDED_ROOT_FILES))
+        or parts in _PUBLICATION_EXCLUDED_DIR_PATHS
+    )
+
+
 def publication_source_path_is_excluded(source: Path, candidate: Path) -> bool:
     """Return whether a path is at or below an entry excluded by v2."""
     try:
@@ -796,6 +819,7 @@ __all__ = [
     "finalize_publication_target",
     "publication_paths_skipped_by_scan",
     "publication_source_digest",
+    "publication_source_link_is_generated",
     "publication_target_from_path",
     "publication_target_name",
     "stamp_publication_identity",
