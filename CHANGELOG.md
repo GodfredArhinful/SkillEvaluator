@@ -90,6 +90,11 @@ All notable changes to SkillEvaluator are documented in this file.
 - Exposed `kata` as the 24th Harbor 0.24 backend alongside local mode.
   `cua-cloud`, `opensandbox`, `hf-sandbox`, `podman`, `runta`, `prime`,
   `mosaic`, and `smol` remain disabled.
+- The public benchmark gate (`scripts/ci/check_public_benchmarks.py`) now
+  requires a `PASS` card to record its `Source digest` and `Tier 3 run ID`.
+  `PASS` cards rendered by earlier releases fail the scan until they are
+  regenerated; earlier `FAIL`, `NEUTRAL`, and `INCOMPLETE` cards without those
+  lines are still accepted, and the lines are validated whenever present.
 
 ### Fixed
 

@@ -162,6 +162,11 @@ skillevaluator validate ./my-skill \
   --evaluator-container-revision ghcr.io/nvidia/skillevaluator@sha256:0117bc2e...
 ```
 
+A `PASS` card must also record its `Source digest` and `Tier 3 run ID`, so a
+`PASS` card rendered by an earlier release fails the scan until it is
+regenerated. Earlier `FAIL`, `NEUTRAL`, and `INCOMPLETE` cards without those
+lines still pass; the lines are validated whenever they are present.
+
 The linter rejects configured known leak patterns such as retired product
 identities, any validation-profile metadata line, common absolute home paths,
 ambiguous legacy uplift cells, the old `Num` column, missing metadata/decision

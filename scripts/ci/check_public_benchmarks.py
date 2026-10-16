@@ -36,13 +36,16 @@ REQUIRED_MARKERS = (
     "- Evaluator version:",
     "- Agents:",
     "- Tasks:",
-    "- Source digest:",
     "- Dataset digest:",
-    "- Tier 3 run ID:",
     "- Attempts per task:",
     "- Environment:",
     "- Tier 3 evidence:",
 )
+# Cards rendered before the publication identity contract have no Source
+# digest or Tier 3 run ID lines. Those fields are validated whenever present,
+# but only a PASS card must carry them (see _check_pass_source_identity and
+# _check_pass_provenance), so earlier non-PASS cards still pass the scan.
+_PASS_ONLY_METADATA_FIELDS = frozenset({"Source digest", "Tier 3 run ID"})
 
 _REQUIRED_HEADINGS = (
     (1, "Skill Benchmark:", True, "# Skill Benchmark:"),
@@ -892,7 +895,8 @@ def _check_metadata_semantics(
         matches = _metadata_field_matches(metadata_lines, field)
         marker = f"- {field}:"
         if not matches:
-            offenders.append(Offender(path, fallback_line, f"missing metadata field: {marker}"))
+            if field not in _PASS_ONLY_METADATA_FIELDS:
+                offenders.append(Offender(path, fallback_line, f"missing metadata field: {marker}"))
             continue
         line_number, value = matches[0]
         valid_value = pattern.fullmatch(value) is not None

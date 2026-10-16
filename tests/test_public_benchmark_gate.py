@@ -106,6 +106,60 @@ Regenerate after material inputs change.
 """
 
 
+def _legacy_benchmark(verdict: str) -> str:
+    """Return a card in the layout rendered before the publication identity fields existed."""
+    card = (
+        _valid_benchmark()
+        .replace("> **Overall verdict: PASS**", f"> **Overall verdict: {verdict}**")
+        .replace(
+            "- Source digest: `sha256:" + "b" * 64 + "` (skill-evaluator-source-tree/2)\n",
+            "",
+        )
+        .replace("- Tier 3 run ID: `run-fixture-001`\n", "")
+    )
+    if verdict != "PASS":
+        card = card.replace("| Tier 3 | Live agent evaluation | **PASS** |", f"| Tier 3 | Live agent evaluation | **{verdict}** |")
+    assert "Source digest" not in card and "Tier 3 run ID" not in card
+    return card
+
+
+@pytest.mark.parametrize("verdict", ["FAIL", "INCOMPLETE", "NEUTRAL"])
+def test_gate_accepts_earlier_non_pass_cards_without_identity_fields(tmp_path: Path, verdict: str) -> None:
+    benchmark = tmp_path / "BENCHMARK.md"
+    benchmark.write_text(_legacy_benchmark(verdict), encoding="utf-8")
+
+    _files, offenders = benchmark_gate.find_offenders([benchmark])
+
+    assert offenders == []
+
+
+def test_gate_requires_identity_fields_only_for_pass_cards(tmp_path: Path) -> None:
+    benchmark = tmp_path / "BENCHMARK.md"
+    benchmark.write_text(_legacy_benchmark("PASS"), encoding="utf-8")
+
+    _files, offenders = benchmark_gate.find_offenders([benchmark])
+
+    assert sorted(offender.reason for offender in offenders) == [
+        "publication PASS without recorded source digest",
+        "publication PASS without recorded tier 3 run id",
+    ]
+
+
+def test_gate_still_validates_present_identity_fields_on_non_pass_cards(tmp_path: Path) -> None:
+    benchmark = tmp_path / "BENCHMARK.md"
+    benchmark.write_text(
+        _valid_benchmark()
+        .replace("> **Overall verdict: PASS**", "> **Overall verdict: FAIL**")
+        .replace("| Tier 3 | Live agent evaluation | **PASS** |", "| Tier 3 | Live agent evaluation | **FAIL** |")
+        .replace("`run-fixture-001`", "`run\\_fixture`"),
+        encoding="utf-8",
+    )
+
+    _files, offenders = benchmark_gate.find_offenders([benchmark])
+
+    assert [offender.reason for offender in offenders] == ["invalid metadata field: - Tier 3 run ID:"]
+
+
 def test_gate_accepts_redesigned_public_card(tmp_path: Path) -> None:
     benchmark = tmp_path / "skill" / "BENCHMARK.md"
     benchmark.parent.mkdir()
