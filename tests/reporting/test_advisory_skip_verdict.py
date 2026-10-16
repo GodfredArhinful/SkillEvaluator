@@ -2279,6 +2279,82 @@ def test_unrecognized_producers_cannot_certify_or_waive_publication(tmp_path: Pa
     assert offenders == []
 
 
+_OPTIONAL_TIER2_SHAPES = {
+    "absent": "pass",
+    "clean-skip-invalid-marker": "pass",
+    "invalid-check-id": "incomplete",
+    "missing-marker": "incomplete",
+    "cross-tier-check-id": "incomplete",
+    "valid-peer-plus-invalid-check-id": "incomplete",
+}
+
+
+@pytest.mark.parametrize(("shape", "expected_status"), list(_OPTIONAL_TIER2_SHAPES.items()))
+def test_present_malformed_optional_tier2_evidence_is_incomplete_across_reporters_and_gate(
+    tmp_path: Path,
+    shape: str,
+    expected_status: str,
+) -> None:
+    """Optional Tier 2 may be absent or cleanly skipped, never present but unrecognized."""
+    tier1 = ValidationResult(validator_name="SCHEMA")
+    tier1.add_success("schema", "Schema passed")
+    tier1.metadata["benchmark_policy"] = {"tier2_required": False, "tier3_required": False}
+    tier2 = ValidationResult(validator_name="Similarity Check")
+    tier2.add_success("similarity_check", "Similarity scan completed")
+    _stamp_publication_evidence(tier2, tier=2, check_id="similarity")
+    results = [tier1]
+    if shape == "clean-skip-invalid-marker":
+        skipped = ValidationResult(validator_name="Similarity Check")
+        skipped.add_warning("Skipped: configure a public embedding provider")
+        skipped.metadata["skipped"] = True
+        skipped.metadata["skip_reason"] = "Skipped: configure a public embedding provider"
+        _stamp_publication_evidence(skipped, tier=2, check_id="not-a-check")
+        results.append(skipped)
+    elif shape == "invalid-check-id":
+        tier2.metadata["publication_evidence"]["check_id"] = "not-a-check"
+        results.append(tier2)
+    elif shape == "missing-marker":
+        results.append(tier2)
+    elif shape == "cross-tier-check-id":
+        tier2.metadata["publication_evidence"]["check_id"] = "schema"
+        results.append(tier2)
+    elif shape == "valid-peer-plus-invalid-check-id":
+        malformed = ValidationResult(validator_name="Context Deduplication")
+        malformed.add_success("context_dedup", "Context scan completed")
+        _stamp_publication_evidence(malformed, tier=2, check_id="not-a-check")
+        results.extend([tier2, malformed])
+    _bind_publication_target(results, _publication_target("demo"))
+    if shape == "missing-marker":
+        # Bound to the target like built-in evidence, but with no producer marker.
+        del tier2.metadata["publication_evidence"]
+
+    benchmark = BenchmarkReporter(skill_name="demo", include_timestamp=False).render_all(results)
+    json_payload = json.loads(JSONReporter(include_timestamp=False, expected_skill_name="demo").render_all(results))
+    html_data = _html_report_data(HTMLReporter(include_timestamp=False, expected_skill_name="demo").render_all(results))
+    markdown = MarkdownReporter(include_timestamp=False, expected_skill_name="demo").render_all(results)
+    benchmark_path = tmp_path / "BENCHMARK.md"
+    benchmark_path.write_text(benchmark, encoding="utf-8")
+    _files, offenders = benchmark_gate.find_offenders([benchmark_path])
+
+    assert json_payload["benchmark_policy"] == {"tier2_required": False, "tier3_required": False}
+    assert "- Tier 2 evidence: optional by policy" in benchmark
+    assert json_payload["publication_status"] == expected_status
+    assert json_payload["publication"]["eligible"] is (expected_status == "pass")
+    assert html_data["publication"]["status"] == expected_status
+    assert f"Overall verdict: {expected_status.upper()}" in benchmark
+    # The card verdict and its Tier 2 row must agree, so the public gate
+    # accepts exactly the cards that every reporter calls publication PASS.
+    assert offenders == []
+    if expected_status == "pass":
+        assert "## Publication Recommendation" in benchmark
+        assert "**Publication status:** \u2705 PASS" in markdown
+    else:
+        assert "## Publication Recommendation" not in benchmark
+        assert "| Tier 2 | Semantic deduplication | **INCOMPLETE** |" in benchmark
+        assert "**Publication status:** \u26a0\ufe0f INCOMPLETE" in markdown
+        assert any("Tier 2" in reason for reason in json_payload["publication"]["reasons"])
+
+
 @pytest.mark.parametrize(
     ("identity", "expected_status"),
     [("Cafe\u0301", "pass"), ("エージェント", "pass"), ("🤖\ufe0f", "incomplete")],

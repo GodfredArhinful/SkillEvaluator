@@ -44,6 +44,7 @@ from skillevaluator.reporting.base import (
     result_has_execution_evidence,
     result_matches_publication_target,
     select_agent_eval_payload,
+    unrecognized_tier2_results,
 )
 from skillevaluator.source_identity import evaluated_source_revision, recorded_evaluated_source
 from skillevaluator.tier3_environments import HARBOR_ENV_MODES
@@ -1117,6 +1118,11 @@ def _tier_status(
         ]
         if not publication_results:
             return "INCOMPLETE", f"No recognized built-in {tier} producer evidence was recorded"
+        if tier == "Tier 2" and (unrecognized := unrecognized_tier2_results(results)):
+            validator_names = list(
+                dict.fromkeys(result.validator_name or "Tier 2 validator" for result in unrecognized)
+            )
+            return "INCOMPLETE", f"Unrecognized Tier 2 producer evidence from {', '.join(validator_names)}"
 
     unbound_results = [
         result

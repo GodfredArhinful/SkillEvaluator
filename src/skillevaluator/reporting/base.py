@@ -1898,6 +1898,20 @@ def is_tier2_result(result: ValidationResult) -> bool:
     )
 
 
+def unrecognized_tier2_results(results: list[ValidationResult]) -> list[ValidationResult]:
+    """Return executed Tier 2 results that lack a recognized built-in producer.
+
+    Optional Tier 2 evidence may be absent or cleanly skipped. A present,
+    executed Tier 2 result whose producer marker is missing or invalid is
+    malformed evidence, not absence, so a waiver cannot hide it.
+    """
+    return [
+        result
+        for result in results
+        if result_publication_evidence(result) is None and is_tier2_result(result) and not is_cleanly_skipped(result)
+    ]
+
+
 def _publication_identity_key(value: object) -> str | None:
     """Normalize canonical aliases without folding filesystem distinctions."""
     if not publication_identity_present(value):
@@ -2278,6 +2292,8 @@ def assess_publication(
         reasons.append("Tier 2 lacks trustworthy execution evidence.")
     elif policy["tier2_required"] and not executed_tier2:
         reasons.append("Required recognized built-in Tier 2 evidence is missing.")
+    if unrecognized_tier2_results(results):
+        reasons.append("Tier 2 evidence lacks a recognized built-in producer identity.")
     require_bound_evidence(executed_tier2, "Tier 2")
 
     executed_tier3 = [result for result in tier3_results if not is_cleanly_skipped(result)]
