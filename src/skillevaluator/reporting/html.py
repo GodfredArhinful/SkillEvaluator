@@ -2067,6 +2067,9 @@ class HTMLReporter(ReporterBase):
                         "metadata": detail.metadata,
                     }
                 )
+            coverage = result.metadata.get("dependency_coverage")
+            if isinstance(coverage, list):
+                result_dict["dependency_coverage"] = coverage
             output.append(result_dict)
         return output
 
