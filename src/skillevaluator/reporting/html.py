@@ -2417,10 +2417,16 @@ class HTMLReporter(ReporterBase):
         # payload make the decision only more conservative. Display shaping
         # must never invent a successful run or erase a persisted waiver.
         raw_publication = assess_publication(results, expected_skill_name=self.expected_skill_name)
-        emitted_publication = assess_publication(
-            results,
-            tier3_data,
-            expected_skill_name=self.expected_skill_name,
+        # Without a persisted payload, tier3_data is a synthesized display
+        # fallback rather than evidence, so only the raw assessment applies.
+        emitted_publication = (
+            assess_publication(
+                results,
+                tier3_data,
+                expected_skill_name=self.expected_skill_name,
+            )
+            if select_agent_eval_candidate(tier3_results) is not None
+            else raw_publication
         )
         publication = max(
             (raw_publication, emitted_publication),

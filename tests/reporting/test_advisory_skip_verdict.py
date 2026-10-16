@@ -2414,6 +2414,38 @@ def test_advisory_tier3_skip_with_unusual_text_is_not_a_failure(tmp_path: Path, 
     assert offenders == []
 
 
+def test_payloadless_clean_tier3_skip_under_waiver_agrees_across_reporters(tmp_path: Path) -> None:
+    results = _publication_ready_results("PAYLOADLESS")
+    target = dict(results[-1].metadata["publication_target"])
+    results = results[:2]
+    results[0].metadata["benchmark_policy"] = {"tier3_required": False}
+    skip = ValidationResult(validator_name="AGENT_EVAL")
+    skip.add_warning("Skipped: live evaluation runtime unavailable")
+    skip.metadata.update({"skipped": True, "publication_target": target})
+    results.append(skip)
+
+    benchmark = BenchmarkReporter(skill_name="candidate-payloadless", include_timestamp=False).render_all(results)
+    json_payload = json.loads(
+        JSONReporter(include_timestamp=False, expected_skill_name="candidate-payloadless").render_all(results)
+    )
+    html_data = _html_report_data(
+        HTMLReporter(include_timestamp=False, expected_skill_name="candidate-payloadless").render_all(results)
+    )
+    markdown = MarkdownReporter(include_timestamp=False, expected_skill_name="candidate-payloadless").render_all(
+        results
+    )
+    benchmark_path = tmp_path / "BENCHMARK.md"
+    benchmark_path.write_text(benchmark, encoding="utf-8")
+    _files, offenders = benchmark_gate.find_offenders([benchmark_path])
+
+    # The HTML display fallback for a payloadless result is not evidence.
+    assert "**Overall verdict: PASS" in benchmark
+    assert json_payload["publication_status"] == "pass"
+    assert html_data["publication"]["status"] == "pass"
+    assert "**Publication status:** \u2705 PASS" in markdown
+    assert offenders == []
+
+
 _OPTIONAL_TIER2_SHAPES = {
     "absent": "pass",
     "clean-skip-invalid-marker": "pass",
