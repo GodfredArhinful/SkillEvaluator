@@ -668,7 +668,8 @@ def test_lift_leaves_out_cases_whose_arms_used_different_judges() -> None:
 
     assert lift["accuracy"] == {"with_skill": 0.8, "without_skill": 0.4, "delta": 0.4, "direction": "up"}
     assert lift["judge_mixed_cases"] == {"accuracy": 1}
-    assert lift["overall"]["delta"] == round(0.4 / len(DEFAULT_METRICS), 4)
+    # Accuracy is the whole Correctness dimension in the five-dimension overall.
+    assert lift["overall"]["delta"] == round(0.4 / 5, 4)
     assert "judge_mixed_cases" not in _compute_lift(with_scores, without_scores, with_rewards[1:], without_rewards)
 
 

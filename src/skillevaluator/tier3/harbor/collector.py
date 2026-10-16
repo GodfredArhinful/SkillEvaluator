@@ -5111,9 +5111,18 @@ def _aggregate_condition_overall(
     rewards: list[dict[str, Any]],
     *,
     score_policy: str | None = None,
+    mixed_metric_contracts: bool = False,
 ) -> float | None:
-    """Aggregate a condition consistently with lift and canonical reports."""
-    if not metrics or (score_policy is not None and score_policy != score_policy_for_metrics(metrics)):
+    """Aggregate a condition consistently with lift and canonical reports.
+
+    Mixed metric contracts use the logical attempt overall: the standard-metric
+    mean covers only standard rows and would overstate pass@k's attempt score.
+    """
+    if (
+        mixed_metric_contracts
+        or not metrics
+        or (score_policy is not None and score_policy != score_policy_for_metrics(metrics))
+    ):
         return _average_overall(rewards)
     score = overall_score_from_metrics(scores, metrics)
     return round(score, 4) if score is not None else None
@@ -6185,6 +6194,25 @@ def _condition_execution_summary(
     }
 
 
+def _fail_execution_with_error(execution: dict[str, Any], error: str) -> None:
+    """Fail one execution summary and publish ``error`` within the bounded error contract."""
+    execution["execution_status"] = "failed"
+    errors = execution.get("execution_errors")
+    if not isinstance(errors, list):
+        errors = []
+        execution["execution_errors"] = errors
+    if error in errors:
+        return
+    raw_total = execution.get("execution_error_details_total")
+    total = raw_total if isinstance(raw_total, int) and not isinstance(raw_total, bool) and raw_total >= 0 else 0
+    total = min(_MAX_JSON_SAFE_INTEGER, max(total, len(errors)) + 1)
+    if len(errors) < PUBLISHED_EXECUTION_ERRORS_MAX:
+        errors.append(error)
+    execution["execution_error_details_total"] = total
+    execution["execution_error_details_shown"] = len(errors)
+    execution["execution_error_details_truncated"] = len(errors) < total
+
+
 def _aggregate_execution(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate execution status while retaining hidden child error counts.
 
@@ -6368,10 +6396,7 @@ def collect_harbor_results(
                 pass_threshold=pass_threshold,
             )
             if with_policy == "mixed-score-policies":
-                with_execution["execution_status"] = "failed"
-                with_execution.setdefault("execution_errors", []).append(
-                    "Conflicting score policies within the with-skill condition"
-                )
+                _fail_execution_with_error(with_execution, "Conflicting score policies within the with-skill condition")
             if with_execution["execution_status"] != "succeeded":
                 with_scores = {}
                 with_custom_scores = {}
@@ -6382,6 +6407,7 @@ def collect_harbor_results(
                     with_metrics,
                     with_logical_rewards,
                     score_policy=with_policy,
+                    mixed_metric_contracts=with_mixed_metric_contracts,
                 )
                 if with_execution["execution_status"] == "succeeded"
                 else None
@@ -6567,9 +6593,9 @@ def collect_harbor_results(
                     pass_threshold=pass_threshold,
                 )
                 if without_policy == "mixed-score-policies":
-                    without_execution["execution_status"] = "failed"
-                    without_execution.setdefault("execution_errors", []).append(
-                        "Conflicting score policies within the without-skill condition"
+                    _fail_execution_with_error(
+                        without_execution,
+                        "Conflicting score policies within the without-skill condition",
                     )
                 if without_execution["execution_status"] != "succeeded":
                     without_scores = {}
@@ -6581,6 +6607,7 @@ def collect_harbor_results(
                         without_metrics,
                         without_logical_rewards,
                         score_policy=without_policy,
+                        mixed_metric_contracts=without_mixed_metric_contracts,
                     )
                     if without_execution["execution_status"] == "succeeded"
                     else None
@@ -6732,8 +6759,7 @@ def collect_harbor_results(
                 ("with-skill", with_execution, with_summary),
                 ("without-skill", without_execution, without_summary),
             ):
-                execution["execution_status"] = "failed"
-                execution.setdefault("execution_errors", []).append(reason)
+                _fail_execution_with_error(execution, reason)
                 if summary is not None:
                     summary.update(execution)
                     summary.update({"scores": {}, "custom_scores": {}, "overall_score": None, "pass_at_k": {}})
@@ -6932,9 +6958,9 @@ def collect_harbor_results(
 
     top_execution = _aggregate_execution(list(all_results["agents"].values()))
     if run_policy_conflict:
-        top_execution["execution_status"] = "failed"
-        top_execution["execution_errors"].append(
-            "Conflicting score policies across agents: " + ", ".join(sorted(scored_policies))
+        _fail_execution_with_error(
+            top_execution,
+            "Conflicting score policies across agents: " + ", ".join(sorted(scored_policies)),
         )
     all_results.update(top_execution)
     if top_execution["execution_errors"]:

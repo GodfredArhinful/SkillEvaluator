@@ -27,6 +27,7 @@ from skillevaluator.tier3.harbor.metrics import (
     DEFAULT_METRICS,
     LEGACY_METRIC_SET,
     LEGACY_METRICS,
+    PARTIAL_SCORE_POLICY,
     metric_set_for_reward,
 )
 from skillevaluator.tier3.harbor.resource_usage import agent_execution_seconds
@@ -532,6 +533,10 @@ def metrics_for_condition(agent_info: dict[str, Any], condition: str) -> list[st
         return []
     scores = agent_info.get(scores_key, {})
     if isinstance(scores, dict) and scores:
+        if "security" in scores and agent_info.get(f"score_policy_{condition}") != PARTIAL_SCORE_POLICY:
+            # Unversioned Security scores claim the default v2 contract, so a
+            # missing evaluator leaves the condition incomplete, not partial.
+            return list(DEFAULT_METRICS)
         return [metric for metric in DEFAULT_METRICS if metric in scores]
     rewards = agent_info.get(rewards_key, [])
     return _metrics_for_rewards(rewards) if isinstance(rewards, list) else []
