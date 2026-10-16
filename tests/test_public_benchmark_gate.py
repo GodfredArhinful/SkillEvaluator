@@ -833,7 +833,11 @@ def test_generated_pass_card_encodes_commas_in_agent_identity(
     tier3 = _tier3_result("PASS")
     agent = tier3.metadata["agent_eval"]["agents"]["codex"]
     if field == "agent-name":
-        tier3.metadata["agent_eval"]["agents"] = {"codex,primary": agent}
+        payload = tier3.metadata["agent_eval"]
+        payload["agents"] = {"codex,primary": agent}
+        payload["best_agent"] = payload["summary"]["best_agent"] = "codex,primary"
+        payload["agents_run"] = ["codex,primary"]
+        payload["summary"]["agents_run"] = ["codex,primary"]
     elif field == "display-name":
         agent["display_name"] = "Codex, Primary"
     else:
@@ -844,7 +848,7 @@ def test_generated_pass_card_encodes_commas_in_agent_identity(
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert ("&#44;" in rendered) is encoded_comma
     if field == "model":
         assert "`gpt-codex,stable`" in rendered
@@ -1030,7 +1034,7 @@ def test_canonical_multi_agent_pass_survives_partial_peer_evidence(tmp_path: Pat
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "| Tier 3 | Live agent evaluation | **PASS** |" in rendered
     assert offenders == []
 
@@ -1205,7 +1209,7 @@ def test_real_optional_tier3_policy_card_passes_gate(tmp_path: Path) -> None:
 
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "- Tier 3 evidence: optional by policy" in rendered
     assert offenders == []
 

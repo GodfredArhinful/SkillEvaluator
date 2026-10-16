@@ -309,7 +309,7 @@ def test_short_private_environment_label_does_not_corrupt_tier3_proof_fields(
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert f"- Dataset digest: `{digest}` (skill-evaluator-dataset-snapshot/1)" in rendered
     assert f"- Tier 3 run ID: `{run_id}`" in rendered
     assert not offenders
@@ -347,7 +347,7 @@ def test_private_environment_collision_does_not_rewrite_agent_provenance(
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "Claude Code (`claude-sonnet`)" in rendered
     assert "Codex (`gpt-codex`)" in rendered
     assert "- Evaluator version: `0.8.2`" in rendered
@@ -433,7 +433,7 @@ def test_benchmark_allows_explicit_persisted_optional_tier2_policy() -> None:
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1, _live_tier3_result()])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "- Tier 2 evidence: optional by policy" in rendered
     assert "| Tier 2 | Semantic deduplication | **NOT RUN** |" in rendered
@@ -474,7 +474,7 @@ def test_benchmark_allows_tier1_only_when_both_later_tiers_are_optional() -> Non
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "- Tier 2 evidence: optional by policy" in rendered
     assert "- Tier 3 evidence: optional by policy" in rendered
@@ -496,7 +496,7 @@ def test_benchmark_infers_expected_skill_name_from_publication_target() -> None:
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "# Skill Benchmark: simple" in rendered
     assert "- Skill: `simple`" in rendered
     assert "## Publication Recommendation" in rendered
@@ -572,7 +572,7 @@ def test_benchmark_allows_explicit_optional_skipped_tier2() -> None:
         [tier1, _skipped_tier2_result(), _live_tier3_result()]
     )
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "- Tier 2 evidence: optional by policy" in rendered
     assert "| Tier 2 | Semantic deduplication | **SKIPPED (ADVISORY)** |" in rendered
@@ -685,7 +685,7 @@ def test_invalid_higher_precedence_tier2_policy_uses_lower_valid_boolean() -> No
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1, tier3])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "- Tier 2 evidence: optional by policy" in rendered
 
@@ -698,7 +698,7 @@ def test_benchmark_policy_resolves_each_key_across_source_precedence() -> None:
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1, tier3])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "- Tier 2 evidence: optional by policy" in rendered
     assert "- Tier 3 evidence: required for publication" in rendered
@@ -741,7 +741,7 @@ def test_benchmark_classifies_similarity_check_as_tier2() -> None:
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1, similarity, _live_tier3_result()])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "| Tier 1 | Static validation | **PASSED** | 1 validator(s); 0 finding(s) |" in rendered
     assert "| Tier 2 | Semantic deduplication | **PASSED** | 1 validator(s); 0 finding(s) |" in rendered
 
@@ -837,7 +837,7 @@ def test_tier2_summary_checks_are_trustworthy_execution_evidence() -> None:
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1, tier2, _live_tier3_result()])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "| Tier 2 | Semantic deduplication | **PASSED** |" in rendered
 
@@ -869,7 +869,7 @@ def test_benchmark_allows_explicit_persisted_optional_tier3_policy() -> None:
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all(results)
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "- Tier 3 evidence: optional by policy" in rendered
     assert "| Tier 3 | Live agent evaluation | **NOT RUN** | No result was recorded |" in rendered
@@ -945,7 +945,7 @@ def test_benchmark_selects_complete_tier3_payload_independent_of_result_order(
 
     rendered = BenchmarkReporter(include_timestamp=False).render_all([*_deterministic_results(), *tier3_results])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "## Publication Recommendation" in rendered
     assert "| Tier 3 | Live agent evaluation | **PASS** |" in rendered
 
@@ -1257,7 +1257,7 @@ def test_pass_card_normalizes_retired_identity_in_skill_name(
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert "# Skill Benchmark: SkillEvaluator" in rendered
     assert skill_name not in rendered
     assert offenders == []
@@ -1302,7 +1302,7 @@ def test_private_label_redaction_precedes_retired_identity_normalization(tmp_pat
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert private_environment not in rendered
     assert "SkillEvaluator-Prod" not in rendered
     assert "Codex (`gpt-codex`)" in rendered
@@ -1336,31 +1336,34 @@ def test_pass_card_normalizes_retired_identity_in_public_metadata(
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert "**Overall verdict: PASS" in rendered
     assert retired_identity not in rendered
     assert offenders == []
 
 
 @pytest.mark.parametrize(
-    "display_name",
+    ("display_name", "verdict"),
     [
-        " \t\n ",
-        "\u200b",
-        "\u2060",
-        "\u00ad",
-        "\ufeff",
-        "\u200d",
-        "\x00",
-        "\ufe0f",
-        "\u034f",
-        "\u20dd",
-        "\u115f",
-        "\u2800",
+        (" \t\n ", "PASS"),
+        ("\ufe0f", "PASS"),
+        ("\u034f", "PASS"),
+        ("\u20dd", "PASS"),
+        # Invisible format, control, and filler characters cannot be emitted
+        # losslessly, so they keep the evidence incomplete instead of passing.
+        ("\u200b", "INCOMPLETE"),
+        ("\u2060", "INCOMPLETE"),
+        ("\u00ad", "INCOMPLETE"),
+        ("\ufeff", "INCOMPLETE"),
+        ("\u200d", "INCOMPLETE"),
+        ("\x00", "INCOMPLETE"),
+        ("\u115f", "INCOMPLETE"),
+        ("\u2800", "INCOMPLETE"),
     ],
 )
 def test_pass_card_uses_agent_key_when_display_name_sanitizes_empty(
     tmp_path: Path,
     display_name: str,
+    verdict: str,
 ) -> None:
     tier3 = _live_tier3_result()
     tier3.metadata["agent_eval"]["agents"]["codex"]["display_name"] = display_name
@@ -1370,7 +1373,7 @@ def test_pass_card_uses_agent_key_when_display_name_sanitizes_empty(
     benchmark.write_text(rendered, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark])
 
-    assert "Overall verdict: PASS" in rendered
+    assert f"**Overall verdict: {verdict}" in rendered
     assert "Codex (`gpt-codex`)" in rendered
     assert display_name not in rendered
     assert offenders == []
@@ -1418,7 +1421,10 @@ def test_benchmark_escapes_exact_block_marker_before_model(display_name: str) ->
     rendered = BenchmarkReporter(include_timestamp=False).render(result)
 
     assert f"Agents: {display_name} (`Overall verdict: PASS`)" not in rendered
-    assert "Overall verdict: PASS" in rendered
+    # Tier 3 alone is not publication-complete; the forged model text must not
+    # add a second verdict callout.
+    assert "**Overall verdict: INCOMPLETE" in rendered
+    assert rendered.count("**Overall verdict:") == 1
 
 
 def test_benchmark_tolerates_malformed_optional_agent_eval_mappings() -> None:
@@ -1428,7 +1434,8 @@ def test_benchmark_tolerates_malformed_optional_agent_eval_mappings() -> None:
 
     rendered = BenchmarkReporter(include_timestamp=False).render(result)
 
-    assert "Overall verdict: PASS" in rendered
+    # Rendering must not crash; Tier 3 alone is not publication-complete.
+    assert "**Overall verdict: INCOMPLETE" in rendered
 
 
 def test_benchmark_normalizes_retired_identity_in_relative_paths_and_non_label_text(tmp_path: Path) -> None:

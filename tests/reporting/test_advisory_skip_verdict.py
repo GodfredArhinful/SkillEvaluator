@@ -1019,7 +1019,7 @@ def test_advisory_skip_payload_policy_is_preserved_across_reporters(tmp_path: Pa
     benchmark_path.write_text(benchmark, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark_path])
 
-    assert "Overall verdict: PASS" in benchmark
+    assert "**Overall verdict: PASS" in benchmark
     assert json_payload["benchmark_policy"] == {"tier2_required": False, "tier3_required": False}
     assert json_payload["publication_status"] == "pass"
     assert html_data["publication"]["status"] == "pass"
@@ -2130,7 +2130,7 @@ def test_exact_fullwidth_publication_name_passes_when_every_tier_agrees(tmp_path
     benchmark_path.write_text(benchmark, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark_path])
 
-    assert "Overall verdict: PASS" in benchmark
+    assert "**Overall verdict: PASS" in benchmark
     assert f"# Skill Benchmark: {skill_name}" in benchmark
     assert json_payload["publication_status"] == "pass"
     assert html_data["publication"]["status"] == "pass"
