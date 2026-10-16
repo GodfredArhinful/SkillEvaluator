@@ -37,6 +37,8 @@ PUBLICATION_TARGET_DIGEST_ALGORITHM = "skill-evaluator-source-tree/2"
 # Authored Tier 3 inputs under ``evals/`` are deliberately included; only the
 # generated ``evals/results/`` subtree is omitted.
 _PUBLICATION_EXCLUDED_DIR_NAMES = frozenset({".git", ".venv", "__pycache__", "node_modules"})
+# Public alias for staging layers that must recognize these any-depth names.
+PUBLICATION_ANY_DEPTH_EXCLUDED_NAMES = _PUBLICATION_EXCLUDED_DIR_NAMES
 _PUBLICATION_EXCLUDED_ROOT_DIRS = frozenset({".evals", ".results", ".versions", "results", "versions"})
 _PUBLICATION_EXCLUDED_DIR_PATHS = frozenset({("evals", "results")})
 _PUBLICATION_EXCLUDED_ROOT_FILES = frozenset({"BENCHMARK.md", "skill-card.md", "skill.oms.sig"})
@@ -788,6 +790,7 @@ def stamp_publication_target(
 
 
 __all__ = [
+    "PUBLICATION_ANY_DEPTH_EXCLUDED_NAMES",
     "PUBLICATION_TARGET_DIGEST_ALGORITHM",
     "PublicationTargetConflictError",
     "finalize_publication_target",

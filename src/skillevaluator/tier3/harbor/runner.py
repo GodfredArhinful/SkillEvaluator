@@ -52,6 +52,7 @@ from skillevaluator.provider_config import (
     resolve_llm_provider,
 )
 from skillevaluator.publication_identity import (
+    PUBLICATION_ANY_DEPTH_EXCLUDED_NAMES,
     publication_source_path_is_excluded,
     publication_target_from_path,
 )
@@ -143,6 +144,7 @@ from skillevaluator.tier3_environments import (
     HARBOR_VERSION,
     harbor_environment_type,
 )
+from skillevaluator.utils.path_security import matches_filesystem_name
 from skillevaluator.utils.redaction import is_sensitive_key, redact_sensitive_text
 from skillevaluator.utils.secure_fs import SecurePathError, SecureRoot
 
@@ -166,6 +168,27 @@ def _runtime_source_is_bound_to_target(source: Path, target: Path) -> bool:
     except (OSError, RuntimeError, ValueError):
         return False
     return True
+
+
+def _task_stages_digest_excluded_entries(task_path: Path) -> bool:
+    """Return whether a generated task carries entries the source digest omits.
+
+    Task inputs (``evals/files`` and per-entry ``files`` references) and the
+    custom ``evals/environment`` are copied as authored, while the digest omits
+    ``.git``, ``.venv``, ``__pycache__`` and ``node_modules`` at any depth. Such
+    staged bytes could change Tier 3 inputs or outcomes without changing the
+    certified digest. Generated task content never uses these names, and
+    runtime skill and repository projections already omit them.
+    """
+    try:
+        for dirpath, dirnames, filenames in os.walk(task_path, followlinks=False):
+            base = Path(dirpath)
+            for name in (*dirnames, *filenames):
+                if matches_filesystem_name(base / name, PUBLICATION_ANY_DEPTH_EXCLUDED_NAMES):
+                    return True
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return False
 
 
 def _runtime_context_is_bound_to_publication_target(
@@ -211,6 +234,8 @@ def _runtime_context_is_bound_to_publication_target(
         return False
 
     for task_path in task_paths:
+        if _task_stages_digest_excluded_entries(task_path):
+            return False
         environment_path = task_path / "environment"
         context_path = environment_path / "repo-context.json"
         staged_repo_context = False

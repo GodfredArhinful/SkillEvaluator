@@ -152,9 +152,11 @@ content that no scan read, so the Tier 1 run records the path and publication
 stays `INCOMPLETE` until it is renamed. The root `evals/` directory holds Tier 3
 inputs and is outside the Tier 1 scans by design.
 Split-job results must match this identity exactly. Tier 3 runs that stage any
-linked/full repository context or external reference/workspace skills remain
-runnable but are marked `INCOMPLETE`, because that projection is not fully
-determined by this target-only publication identity. Legacy anonymous results
+linked/full repository context or external reference/workspace skills, or task
+inputs and custom environments that carry `.git`, `.venv`, `__pycache__`, or
+`node_modules` entries, remain runnable but are marked `INCOMPLETE`, because
+that projection is not fully determined by this target-only publication
+identity. Legacy anonymous results
 remain readable, but their publication status is `INCOMPLETE`.
 
 Built-in Tier 1 and Tier 2 results also carry a versioned
