@@ -315,6 +315,25 @@ def test_short_private_environment_label_does_not_corrupt_tier3_proof_fields(
     assert not offenders
 
 
+@pytest.mark.parametrize("verdict", ["pass", "fail"])
+def test_runner_shaped_tier3_run_id_is_rendered_verbatim_for_the_gate(tmp_path: Path, verdict: str) -> None:
+    # The Harbor runner names runs `<timestamp>_<pid>_<12 hex>` and uses that name as the run ID.
+    run_id = "20261016_081505_48213_3f9c2a1b7d4e"
+    result = _live_tier3_result()
+    payload = result.metadata["agent_eval"]
+    payload["run_id"] = payload["summary"]["run_id"] = run_id
+    if verdict == "fail":
+        payload["verdict"] = payload["summary"]["verdict"] = "fail"
+
+    rendered = BenchmarkReporter(include_timestamp=True).render_all([*_deterministic_results(), result])
+    benchmark = tmp_path / "BENCHMARK.md"
+    benchmark.write_text(rendered, encoding="utf-8")
+    _files, offenders = benchmark_gate.find_offenders([benchmark])
+
+    assert f"- Tier 3 run ID: `{run_id}`" in rendered
+    assert offenders == []
+
+
 @pytest.mark.parametrize("environment", ["codex", "gpt-codex", "claude-code", "0.8.2"])
 def test_private_environment_collision_does_not_rewrite_agent_provenance(
     tmp_path: Path,

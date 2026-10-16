@@ -330,8 +330,11 @@ class BenchmarkReporter(ReporterBase):
             lines.append("- Dataset digest: not recorded (legacy or non-live result)")
 
         tier3_run_id = agent_eval_publication_run_id(ae)
+        # The accessor admits only `[A-Za-z0-9][A-Za-z0-9._-]*`, which is inert in a
+        # code span. Markdown escaping would put literal backslashes into runner IDs
+        # such as `20261016_081505_4821_3f9c2a1b7d4e`.
         lines.append(
-            f"- Tier 3 run ID: `{_publication_safe_inline(tier3_run_id)}`"
+            f"- Tier 3 run ID: `{tier3_run_id}`"
             if tier3_run_id
             else "- Tier 3 run ID: not recorded (Tier 3 did not complete)"
         )
