@@ -1384,6 +1384,14 @@ def _kata_environment_kwarg_error(environment_kwargs: Mapping[str, Any]) -> str 
 
 def _staged_task_environment_error(env_mode: str, task_dirs: Iterable[Path]) -> str | None:
     """Reject staged task environments the selected backend cannot run."""
+    if env_mode == "mosaic":
+        for task_dir in task_dirs:
+            if (task_dir / "environment" / "docker-compose.yaml").exists():
+                return (
+                    f"Harbor environment 'mosaic' runs one VM per trial and cannot run Docker Compose task "
+                    f"'{task_dir.name}'; use a Dockerfile-only environment or another backend."
+                )
+        return None
     if env_mode != "kata":
         return None
     import yaml
@@ -1864,19 +1872,6 @@ def _backend_config_prerequisite_errors(env_mode: str) -> list[str]:
                 "Harbor environment 'mosaic' does not forward E2B_API_KEY; set MOSAIC_API_TOKEN or run `mos login`."
             )
     return errors
-
-
-def _staged_task_environment_error(env_mode: str, task_dirs: Iterable[Path]) -> str | None:
-    """Reject staged task environments the selected backend cannot run."""
-    if env_mode != "mosaic":
-        return None
-    for task_dir in task_dirs:
-        if (task_dir / "environment" / "docker-compose.yaml").exists():
-            return (
-                f"Harbor environment 'mosaic' runs one VM per trial and cannot run Docker Compose task "
-                f"'{task_dir.name}'; use a Dockerfile-only environment or another backend."
-            )
-    return None
 
 
 def _harbor_missing_dependency_summary(exc: ImportError) -> str:
