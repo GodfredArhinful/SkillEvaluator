@@ -112,7 +112,10 @@ incomplete still makes the card `INCOMPLETE` because malformed evidence cannot
 certify publication. A default-passed result object is not sufficient. Tier 1
 and Tier 2 evidence must carry a valid `publication_evidence` marker written by
 a built-in command wrapper, and every recognized result must record a success,
-finding, or positive check count that proves it executed. Legacy and custom
+finding, or positive check count that proves it executed. Tier 1 must also
+cover every default check that applies to the content type: schema, security,
+PII, license, code integrity, and Unicode, plus version, quality, and lint for
+skills. A run narrowed with `--checks` is reported but cannot certify Tier 1. Legacy and custom
 results remain visible, and their failures still block publication, but they
 cannot satisfy a required tier or create a waiver. Generic per-result `optional`
 metadata is not a publication waiver; only the resolved `benchmark_policy` from

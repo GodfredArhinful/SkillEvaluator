@@ -150,7 +150,9 @@ All notable changes to SkillEvaluator are documented in this file.
   The CLI reference adds `validate --workers`, the full `--env-mode` list, and
   the exit codes the CLI actually returns (`0`, `1`, `2`).
 - `BENCHMARK.md` publication verdicts now require completed Tier 1 and Tier 2
-  execution evidence by default, conservatively resolve conflicting peer
+  execution evidence by default (Tier 1 must cover every default check that
+  applies to the content type, so a run narrowed with `--checks` cannot
+  certify publication), conservatively resolve conflicting peer
   policy and Tier 3 result metadata, bind every tier and policy claim to one
   versioned source-tree digest, preserve the Tier 3 run ID, persist an explicit
   publication status in JSON and HTML, and reject

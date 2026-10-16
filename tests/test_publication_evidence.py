@@ -200,8 +200,11 @@ Output: "Action item: Follow up tomorrow."
     assert all(result.passed for result in results)
     assert all(result_has_execution_evidence(result) for result in results)
     assessment = assess_publication(results, expected_skill_name="demo")
-    assert assessment.status == "pass"
-    assert not assessment.reasons
+    # Every selected check proves it ran; only the narrowed lineup remains.
+    assert assessment.status == "incomplete"
+    assert assessment.reasons == (
+        "Tier 1 did not run every required check: lint, pii, quality, security, unicode, version.",
+    )
 
 
 def test_dependency_publication_is_incomplete_when_one_requirements_scan_fails(
@@ -288,3 +291,125 @@ def test_tier3_result_cannot_reuse_a_tier1_or_tier2_producer_marker(tier: int, c
     stamp_publication_evidence([result], tier=tier, check_id=check_id)
 
     assert result_publication_evidence(result) is None
+
+
+def _successful_tier1_results(skill: Path, checks: tuple[str, ...], *, skill_like: bool = True) -> list:
+    from skillevaluator.tier1.commands import _as_result
+
+    def successful(name: str) -> ValidationResult:
+        result = ValidationResult(validator_name=name)
+        result.add_success(name.lower(), f"{name} completed")
+        return result
+
+    return [
+        _as_result(
+            check.upper(),
+            f"{check} validation",
+            lambda _target, check=check: successful(check.upper()),
+            skill,
+            publication_check_id=check,
+            skill_like=skill_like,
+        )
+        for check in checks
+    ]
+
+
+def _bound_tier2_result(skill: Path) -> ValidationResult:
+    from skillevaluator.tier2.commands import _guarded_result
+
+    def successful() -> ValidationResult:
+        result = ValidationResult(validator_name="Similarity Check")
+        result.add_success("similarity", "Similarity scan completed")
+        return result
+
+    return _guarded_result("Similarity Check", skill, successful, check_id="similarity")[0]
+
+
+_CORE_TIER1_CHECKS = ("schema", "security", "pii", "license", "code-integrity", "unicode")
+_SKILL_TIER1_CHECKS = (*_CORE_TIER1_CHECKS, "version", "quality", "lint")
+
+
+@pytest.mark.parametrize(
+    ("checks", "skill_like", "expected"),
+    [
+        (("unicode",), True, "incomplete"),
+        (("quality",), True, "incomplete"),
+        (_CORE_TIER1_CHECKS, True, "incomplete"),
+        (_CORE_TIER1_CHECKS, False, "pass"),
+        (_SKILL_TIER1_CHECKS, True, "pass"),
+    ],
+    ids=["unicode-only", "quality-only", "skill-without-skill-checks", "non-skill-core", "full-skill-lineup"],
+)
+def test_tier1_publication_requires_the_applicable_check_lineup(
+    tmp_path: Path,
+    checks: tuple[str, ...],
+    skill_like: bool,
+    expected: str,
+) -> None:
+    from scripts.ci import check_public_benchmarks as benchmark_gate
+
+    from skillevaluator.reporting import BenchmarkReporter
+
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill.\n---\n", encoding="utf-8")
+    results = [*_successful_tier1_results(skill, checks, skill_like=skill_like), _bound_tier2_result(skill)]
+    for result in results:
+        result.metadata["benchmark_policy"] = {"tier2_required": True, "tier3_required": False}
+
+    assessment = assess_publication(results, expected_skill_name="demo")
+    benchmark = BenchmarkReporter(skill_name="demo", include_timestamp=False).render_all(results)
+    benchmark_path = tmp_path / "BENCHMARK.md"
+    benchmark_path.write_text(benchmark, encoding="utf-8")
+    _files, offenders = benchmark_gate.find_offenders([benchmark_path])
+
+    assert assessment.status == expected
+    assert offenders == []
+    if expected == "pass":
+        assert "**Overall verdict: PASS" in benchmark
+    else:
+        assert any(reason.startswith("Tier 1 did not run every required check:") for reason in assessment.reasons)
+        assert "| Tier 1 | Static validation | **INCOMPLETE** | Required Tier 1 checks did not run:" in benchmark
+
+
+def test_narrowed_validation_run_records_the_full_tier1_lineup(tmp_path: Path) -> None:
+    from skillevaluator.tier1.commands import run_validation
+
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill.\n---\n", encoding="utf-8")
+
+    results = run_validation(skill, checks="unicode", content_type="skill", on_check=lambda _check: None)
+
+    assert [result.metadata["tier1_required_checks"] for result in results] == [sorted(_SKILL_TIER1_CHECKS)]
+    assert assess_publication(results, expected_skill_name="demo").status == "incomplete"
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [["unicode"], [*_CORE_TIER1_CHECKS[:-1]], "not-a-list", [*_SKILL_TIER1_CHECKS, "unicode"]],
+    ids=["single-check", "missing-core-check", "malformed", "duplicate"],
+)
+def test_narrowed_tier1_lineup_declaration_cannot_waive_checks(tmp_path: Path, declaration: object) -> None:
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: Demo skill.\n---\n", encoding="utf-8")
+    results = [*_successful_tier1_results(skill, ("unicode",)), _bound_tier2_result(skill)]
+    for result in results:
+        result.metadata["benchmark_policy"] = {"tier2_required": True, "tier3_required": False}
+    results[0].metadata["tier1_required_checks"] = declaration
+
+    assessment = assess_publication(results, expected_skill_name="demo")
+
+    assert assessment.status == "incomplete"
+    assert (
+        "Tier 1 did not run every required check: code-integrity, license, lint, pii, quality, schema, "
+        "security, version." in assessment.reasons
+    )
+
+
+def test_publication_tier1_lineup_matches_the_default_validation_run() -> None:
+    from skillevaluator.publication_evidence import TIER1_PUBLICATION_CORE_CHECKS, TIER1_PUBLICATION_SKILL_CHECKS
+    from skillevaluator.tier1.commands import DEFAULT_CHECKS
+
+    assert frozenset(DEFAULT_CHECKS) == TIER1_PUBLICATION_CORE_CHECKS | TIER1_PUBLICATION_SKILL_CHECKS

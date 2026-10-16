@@ -578,13 +578,16 @@ def test_validate_same_entry_alias_expects_recorded_publication_name(
     benchmark = (output_dir / "BENCHMARK.md").read_text(encoding="utf-8")
     report = json.loads(next(output_dir.glob("skillevaluator-output-*.json")).read_text(encoding="utf-8"))
     assert f"# Skill Benchmark: {recorded_name}" in benchmark
-    assert "| Tier 1 | Static validation | **PASSED** |" in benchmark
+    # The row gets past the identity binding checks; only the narrowed
+    # --checks lineup keeps Tier 1 from certifying publication.
+    assert "Missing canonical source identity" not in benchmark
+    assert "| Tier 1 | Static validation | **INCOMPLETE** | Required Tier 1 checks did not run:" in benchmark
     assert report["tier3"]["skill_name"] == recorded_name
     assert report["tier3"]["summary"]["skill_name"] == recorded_name
     identity_reasons = [
         reason
         for reason in report["publication"]["reasons"]
-        if "different" in reason or "conflicting" in reason or "Tier 1" in reason
+        if "different" in reason or "conflicting" in reason or "lack one canonical" in reason
     ]
     assert identity_reasons == []
 

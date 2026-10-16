@@ -983,13 +983,19 @@ def test_split_tier_aggregation_binds_every_result_to_one_source_snapshot(tmp_pa
         }
         return result
 
-    tier1 = _as_result(
-        "SCHEMA",
-        "Schema validation",
-        lambda _target: successful_result("SCHEMA", "schema"),
-        skill,
-        publication_check_id="schema",
-    )
+    from skillevaluator.publication_evidence import tier1_required_checks
+
+    # Publication requires the whole applicable Tier 1 lineup, not one check.
+    tier1_results = [
+        _as_result(
+            check.upper(),
+            f"{check} validation",
+            lambda _target, check=check: successful_result(check.upper(), check),
+            skill,
+            publication_check_id=check,
+        )
+        for check in tier1_required_checks(skill_like=True)
+    ]
     tier2 = _guarded_result(
         "Similarity Check",
         skill,
@@ -1000,7 +1006,7 @@ def test_split_tier_aggregation_binds_every_result_to_one_source_snapshot(tmp_pa
     assert unchanged_target is not None
     tier3 = tier3_result(unchanged_target)
 
-    benchmark = BenchmarkReporter(skill_name="demo", include_timestamp=False).render_all([tier1, tier2, tier3])
+    benchmark = BenchmarkReporter(skill_name="demo", include_timestamp=False).render_all([*tier1_results, tier2, tier3])
     benchmark_path = tmp_path / "BENCHMARK.md"
     benchmark_path.write_text(benchmark, encoding="utf-8")
     _files, offenders = benchmark_gate.find_offenders([benchmark_path])
@@ -1008,12 +1014,11 @@ def test_split_tier_aggregation_binds_every_result_to_one_source_snapshot(tmp_pa
     assert "> ✅ **Overall verdict: PASS — Recommended for publication**" in benchmark
     assert "## Publication Recommendation" in benchmark
     assert offenders == []
-    machine_report = json.loads(JSONReporter(include_timestamp=False).render_all([tier1, tier2, tier3]))
-    assert [result["publication_target"] for result in machine_report["results"]] == [
-        unchanged_target,
-        unchanged_target,
-        unchanged_target,
-    ]
+    machine_report = json.loads(JSONReporter(include_timestamp=False).render_all([*tier1_results, tier2, tier3]))
+    assert machine_report["publication_status"] == "pass"
+    assert [result["publication_target"] for result in machine_report["results"]] == [unchanged_target] * (
+        len(tier1_results) + 2
+    )
     assert machine_report["tier3"]["run_id"] == "split-tier-fixture-run"
 
     (skill / "SKILL.md").write_text("---\nname: changed-between-jobs\n---\n", encoding="utf-8")
@@ -1028,7 +1033,7 @@ def test_split_tier_aggregation_binds_every_result_to_one_source_snapshot(tmp_pa
     changed_tier3 = tier3_result(changed_target)
 
     mixed = BenchmarkReporter(skill_name="demo", include_timestamp=False).render_all(
-        [tier1, changed_tier2, changed_tier3]
+        [*tier1_results, changed_tier2, changed_tier3]
     )
 
     assert "Overall verdict: INCOMPLETE" in mixed

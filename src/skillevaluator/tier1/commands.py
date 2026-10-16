@@ -19,7 +19,7 @@ from skillevaluator.constants import (
     CONTENT_TYPE_WORKFLOWS,
 )
 from skillevaluator.models.result import ValidationResult
-from skillevaluator.publication_evidence import stamp_publication_evidence
+from skillevaluator.publication_evidence import stamp_publication_evidence, stamp_tier1_required_checks
 from skillevaluator.publication_identity import finalize_publication_target, publication_target_from_path
 from skillevaluator.reporting import CLIReporter, HTMLReporter, JSONReporter, MarkdownReporter, SARIFReporter
 from skillevaluator.reporting.html import is_tier2_validator_name
@@ -86,6 +86,7 @@ def _as_result(
     *,
     publication_check_id: str,
     bind_publication_target: bool = True,
+    skill_like: bool = True,
 ) -> ValidationResult:
     initial_target = publication_target_from_path(target) if bind_publication_target else None
     result = validator(target)
@@ -94,6 +95,9 @@ def _as_result(
     if not result.validator_description:
         result.validator_description = description
     stamp_publication_evidence([result], tier=1, check_id=publication_check_id)
+    # Record the whole applicable lineup, so a run narrowed with --checks (or a
+    # standalone single-check command) cannot certify Tier 1 by itself.
+    stamp_tier1_required_checks([result], skill_like=skill_like)
     if bind_publication_target:
         finalize_publication_target([result], target, initial_target)
     return result
@@ -198,6 +202,7 @@ def run_validation(
             target_path,
             publication_check_id=check_id,
             bind_publication_target=False,
+            skill_like=skill_like,
         )
 
     def _schema_results() -> list[ValidationResult]:

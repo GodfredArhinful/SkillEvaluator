@@ -74,8 +74,9 @@ Do not reuse a prior live score while changing only its label or date. If a
 baseline was not run, keep the explicit “uplift unavailable” state.
 
 When an orchestrator combines tiers from separate jobs, merge the actual result
-objects, including each result's `publication_target` and the built-in Tier 1
-or Tier 2 `publication_evidence` producer marker, and preserve the explicit
+objects, including each result's `publication_target`, the built-in Tier 1
+or Tier 2 `publication_evidence` producer marker, and the Tier 1
+`tier1_required_checks` lineup, and preserve the explicit
 `benchmark_policy` in the combined artifact. Every contributing result must
 carry the same exact NFC filesystem-entry name and
 `skill-evaluator-source-tree/2` digest. Completed Tier 3 evidence

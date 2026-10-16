@@ -38,6 +38,7 @@ from skillevaluator.reporting.base import (
     is_cleanly_skipped,
     is_tier2_result,
     is_tier3_result,
+    missing_tier1_publication_checks,
     publication_identity_present,
     publication_semantic_text,
     publication_target_for_results,
@@ -1152,6 +1153,9 @@ def _tier_status(
             dict.fromkeys(result.validator_name or f"{tier} validator" for result in missing_evidence)
         )
         return "INCOMPLETE", f"Missing trustworthy execution evidence from {', '.join(validator_names)}"
+
+    if tier == "Tier 1" and (missing_checks := missing_tier1_publication_checks(publication_results)):
+        return "INCOMPLETE", f"Required Tier 1 checks did not run: {', '.join(missing_checks)}"
 
     skipped = [result for result in publication_results if is_cleanly_skipped(result)]
     if tier in {"Tier 1", "Tier 2"} and skipped:

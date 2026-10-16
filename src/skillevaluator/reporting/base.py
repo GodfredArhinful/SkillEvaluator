@@ -37,7 +37,11 @@ from skillevaluator.constants import (
     DIMENSION_VERDICT_NEUTRAL_THRESHOLD,
     DIMENSION_VERDICT_PASS_THRESHOLD,
 )
-from skillevaluator.publication_evidence import result_publication_evidence
+from skillevaluator.publication_evidence import (
+    TIER1_REQUIRED_CHECKS_KEY,
+    declared_tier1_required_checks,
+    result_publication_evidence,
+)
 from skillevaluator.publication_identity import PUBLICATION_TARGET_DIGEST_ALGORITHM
 from skillevaluator.publication_text import (
     publication_free_text,
@@ -1909,6 +1913,31 @@ def is_tier2_result(result: ValidationResult) -> bool:
     )
 
 
+def missing_tier1_publication_checks(results: list[ValidationResult]) -> tuple[str, ...]:
+    """Return applicable built-in Tier 1 checks that no executed result covers.
+
+    Built-in Tier 1 producers record the content type's whole lineup, so a run
+    narrowed with ``--checks`` cannot certify Tier 1 with a subset of checks.
+    """
+    executed = [
+        (result, producer)
+        for result in results
+        if (producer := result_publication_evidence(result)) is not None
+        and producer.tier == 1
+        and not is_cleanly_skipped(result)
+    ]
+    declarations = [
+        result.metadata[TIER1_REQUIRED_CHECKS_KEY]
+        for result, _producer in executed
+        if isinstance(result.metadata, dict) and TIER1_REQUIRED_CHECKS_KEY in result.metadata
+    ]
+    if not declarations:
+        return ()
+    required = frozenset().union(*(declared_tier1_required_checks(value) for value in declarations))
+    covered = {producer.check_id for _result, producer in executed}
+    return tuple(sorted(required - covered))
+
+
 def unrecognized_tier2_results(results: list[ValidationResult]) -> list[ValidationResult]:
     """Return executed Tier 2 results that lack a recognized built-in producer.
 
@@ -2296,6 +2325,8 @@ def assess_publication(
         reasons.append("Recognized built-in Tier 1 evidence is missing.")
     elif any(not result_has_execution_evidence(result) for result in executed_tier1):
         reasons.append("Tier 1 lacks trustworthy execution evidence.")
+    if missing_checks := missing_tier1_publication_checks(results):
+        reasons.append(f"Tier 1 did not run every required check: {', '.join(missing_checks)}.")
     require_bound_evidence(executed_tier1, "Tier 1")
 
     executed_tier2 = [result for result in tier2_results if not is_cleanly_skipped(result)]
