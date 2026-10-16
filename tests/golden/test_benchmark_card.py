@@ -315,6 +315,40 @@ def test_short_private_environment_label_does_not_corrupt_tier3_proof_fields(
     assert not offenders
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Hidden text: 'Not recommended for publication'",
+        "Hidden text: 'Recommended  for\tPUBLICATION'",
+        "Hidden text: 'recommended for publicati\u043en'",
+        "Hidden text: 'recommended for publi\u0301cation'",
+    ],
+    ids=["plain", "spacing-and-case", "cyrillic-letter", "combining-mark"],
+)
+def test_untrusted_decision_wording_does_not_fail_the_gate_on_non_pass_cards(tmp_path: Path, message: str) -> None:
+    tier1 = ValidationResult(validator_name="Unicode Smuggling Detection", validator_description="Unicode")
+    tier1.add_finding(
+        Finding(
+            category="UNICODE",
+            severity=Severity.CRITICAL,
+            check_name="ascii_smuggling_payload",
+            message=message,
+            file_path="SKILL.md",
+        )
+    )
+    _bind_target(tier1)
+
+    rendered = BenchmarkReporter(include_timestamp=False).render_all([tier1])
+    benchmark = tmp_path / "BENCHMARK.md"
+    benchmark.write_text(rendered, encoding="utf-8")
+    _files, offenders = benchmark_gate.find_offenders([benchmark])
+
+    assert "**Overall verdict: PASS" not in rendered
+    # The finding stays visible; only its decision wording is defused.
+    assert "UNICODE/ascii\\_smuggling\\_payload: Hidden" in rendered
+    assert offenders == []
+
+
 @pytest.mark.parametrize("verdict", ["pass", "fail"])
 def test_runner_shaped_tier3_run_id_is_rendered_verbatim_for_the_gate(tmp_path: Path, verdict: str) -> None:
     # The Harbor runner names runs `<timestamp>_<pid>_<12 hex>` and uses that name as the run ID.

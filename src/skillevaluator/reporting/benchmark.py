@@ -22,6 +22,7 @@ from skillevaluator.constants import (
     TIER3_LIFT_PASS_THRESHOLD,
 )
 from skillevaluator.publication_evidence import result_has_publication_evidence, result_publication_evidence
+from skillevaluator.publication_text import publication_confusable_skeleton
 from skillevaluator.reporting.base import (
     PublicationTargetIdentity,
     ReporterBase,
@@ -103,6 +104,12 @@ _PUBLIC_USER_PATH = re.compile(
 )
 _MARKDOWN_INLINE_SPECIAL = re.compile(r"([\\*_\[\]~])")
 _MARKDOWN_BLOCK_PREFIX = re.compile(r"^(?:#{1,6}|>|[+*-]|\d+[.)])(?=\s|$)")
+# The public benchmark gate rejects a non-PASS card whose visible text contains
+# this decision phrase, matching confusable aliases by treating each non-ASCII
+# character as a wildcard for one letter. Untrusted text is screened the same way.
+_DECISION_ALIAS_SENTINEL = "\x00"
+_PUBLICATION_DECISION_PHRASE = "recommended for publication"
+_PLAIN_DECISION_PHRASE = re.compile(r"recommended\s+for\s+publication", flags=re.IGNORECASE)
 _MARKDOWN_THEMATIC_BREAK = re.compile(r"^(?:\s*[-*_]){3,}\s*$")
 _PUBLICATION_URL_SCHEME = re.compile(r"(?P<scheme>https?|ftp)://", flags=re.IGNORECASE)
 _PUBLICATION_WWW_PREFIX = re.compile(r"\bwww\.", flags=re.IGNORECASE)
@@ -1354,6 +1361,15 @@ def _publication_safe_inline(
     text = _PUBLICATION_WWW_PREFIX.sub(lambda match: f"{match.group(0)[:-1]}&#46;", text)
     text = text.replace("@", "&#64;")
     text = _MARKDOWN_INLINE_SPECIAL.sub(r"\\\1", text)
+    if _contains_publication_decision_phrase(text):
+        # Validator output or skill content must not carry the card's decision
+        # wording, or a legitimate non-PASS card would fail the public gate.
+        # Join the phrase itself first, then the whole value, then withhold it.
+        text = _PLAIN_DECISION_PHRASE.sub(lambda match: "-".join(match.group(0).split()), text)
+        if _contains_publication_decision_phrase(text):
+            text = "-".join(text.split())
+        if _contains_publication_decision_phrase(text):
+            text = "[text withheld: it contains publication decision wording]"
     if _MARKDOWN_BLOCK_PREFIX.match(text) or _MARKDOWN_THEMATIC_BREAK.fullmatch(text):
         marker_end = text.find(" ")
         marker_end = len(text) if marker_end < 0 else marker_end
@@ -1362,6 +1378,34 @@ def _publication_safe_inline(
             return f"{text[:punctuation_index]}\\{text[punctuation_index:]}"
         return f"\\{text}"
     return text
+
+
+def _decision_phrase_surface(value: str) -> str:
+    """Project text the way the public gate does before matching decision wording."""
+    skeleton = publication_confusable_skeleton(publication_semantic_text(value, strip_marks=True))
+    return "".join(
+        " " if character.isspace() else character if character.isascii() else _DECISION_ALIAS_SENTINEL
+        for character in skeleton
+    )
+
+
+_PUBLICATION_DECISION_PATTERN = re.compile(
+    "".join(
+        r"\s+"
+        if character.isspace()
+        else f"(?:{re.escape(character)}|{re.escape(_DECISION_ALIAS_SENTINEL)})"
+        if character.isascii() and character.isalnum()
+        else re.escape(character)
+        for character in publication_confusable_skeleton(
+            publication_semantic_text(_PUBLICATION_DECISION_PHRASE, strip_marks=True)
+        )
+    )
+)
+
+
+def _contains_publication_decision_phrase(value: str) -> bool:
+    """Return whether text would read as a publication decision to the public gate."""
+    return _PUBLICATION_DECISION_PATTERN.search(_decision_phrase_surface(value)) is not None
 
 
 def _normalized_publication_text(value: object) -> str:
