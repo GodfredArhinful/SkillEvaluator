@@ -554,6 +554,31 @@ def test_gke_environment_create_pod_autopilot_storage_idempotency_and_custom_pro
 
 
 @pytest.mark.parametrize(
+    ("node_name", "labels", "expected"),
+    [
+        ("gke-std-pool-1", {"autopilot.gke.io/selected-node-type": "general-purpose"}, True),
+        ("gke-std-pool-1", {"cloud.google.com/gke-autopilot": "true"}, True),
+        ("gk3-eval-pool-1", {}, True),
+        ("gke-std-pool-1", {"evil.example.com/autopilot.gke.io/x": "1"}, False),
+        ("gke-std-pool-1", {"autopilot.gke.io.evil.example/x": "1"}, False),
+        ("gke-std-pool-1", {"x-autopilot.gke.io/y": "1"}, False),
+        ("gke-std-pool-1", {"autopilot.gke.io/": "1"}, False),
+        ("gke-std-pool-1", {"autopilot.gke.io/a/b": "1"}, False),
+        ("gke-std-pool-1", {"team": "autopilot.gke.io/primary-container"}, False),
+    ],
+)
+def test_is_autopilot_node_matches_the_autopilot_label_prefix_exactly(
+    node_name: str,
+    labels: dict[str, str],
+    expected: bool,
+) -> None:
+    """Treat only a well-formed autopilot.gke.io/<name> label key as Autopilot, not that text elsewhere."""
+    node = SimpleNamespace(metadata=SimpleNamespace(name=node_name, labels=labels))
+
+    assert gke_env_mod._is_autopilot_node(node) is expected
+
+
+@pytest.mark.parametrize(
     ("init_exit_code", "init_waiting_reason", "pod_phase", "expected_error_snippet"),
     [
         # 1. Init probe succeeds (rc=0) and pod is Running/Ready -> succeeds

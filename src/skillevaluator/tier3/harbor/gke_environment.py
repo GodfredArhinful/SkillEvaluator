@@ -80,6 +80,7 @@ _DNS_PORT = 53
 _DNS_PROTOCOLS = frozenset({"UDP", "TCP"})
 _EXEC_QUERY_COMMAND_RE = re.compile(r"(?P<sep>[?&])command=[^\s\"']+")
 _GKE_CLOUD_DNS_METADATA_CIDR = "169.254.169.254/32"
+_GKE_AUTOPILOT_LABEL_PREFIX = "autopilot.gke.io"
 _GKE_DIRECT_WIF_PRINCIPAL_ANNOTATION = "iam.gke.io/return-principal-id-as-email"
 _GKE_METADATA_PROBE_URLS = (
     "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
@@ -91,6 +92,8 @@ _KUBE_DNS_POD_LABEL_KEY = "k8s-app"
 _KUBE_DNS_POD_LABEL_VALUE = "kube-dns"
 _KUBE_SYSTEM_NAMESPACE_LABEL_KEY = "kubernetes.io/metadata.name"
 _KUBE_SYSTEM_NAMESPACE_LABEL_VALUE = "kube-system"
+# The name segment of a qualified Kubernetes label key.
+_LABEL_KEY_NAME_RE = re.compile(r"[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?")
 _MAX_TRANSIENT_EXEC_ATTEMPTS = 4
 _METADATA_PROBE_HTTP_TIMEOUT_SEC = 2
 _METADATA_PROBE_ISOLATED_SENTINEL = "SKILLEVALUATOR_METADATA_ISOLATED_OK"
@@ -721,6 +724,16 @@ def ensure_gke_metadata_network_policy(
     _validate_existing_metadata_network_policy(reread, namespace=namespace)
 
 
+def _qualified_label_key_prefix(key: object) -> str | None:
+    """Return the prefix of a well-formed ``prefix/name`` Kubernetes label key, or None."""
+    if not isinstance(key, str):
+        return None
+    prefix, separator, name = key.partition("/")
+    if not separator or not prefix or not _LABEL_KEY_NAME_RE.fullmatch(name):
+        return None
+    return prefix
+
+
 def _is_autopilot_node(node: Any) -> bool:
     """Return True if a Kubernetes V1Node exhibits GKE Autopilot naming or label conventions."""
     metadata = getattr(node, "metadata", None)
@@ -729,7 +742,7 @@ def _is_autopilot_node(node: Any) -> bool:
         return True
     labels = getattr(metadata, "labels", None)
     if isinstance(labels, Mapping):
-        if any(str(k).startswith("autopilot.gke.io/") for k in labels):
+        if any(_qualified_label_key_prefix(key) == _GKE_AUTOPILOT_LABEL_PREFIX for key in labels):
             return True
         if parse_optional_bool_flag(labels.get("cloud.google.com/gke-autopilot")) is True:
             return True
