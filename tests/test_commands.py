@@ -2829,6 +2829,84 @@ def test_summarize_tier2_empty_results_name_a_reason() -> None:
     assert skip, "an empty Tier 2 result set must still explain the skip"
 
 
+_PROVIDER_SKIP_MESSAGE = (
+    "Tier 2 skipped: embedding setup is required.\n\n"
+    "No provider is configured.\n"
+    "For example, set:\n"
+    "  export SKILL_EVAL_EMBEDDING_PROVIDER=openai\n"
+    "  export OPENAI_API_KEY='your-api-key'\n\n"
+    "To skip Tier 2, pass --no-dedup."
+)
+
+
+def _skipped_tier2(message: str):
+    from skillevaluator.models.result import ValidationResult
+
+    result = ValidationResult(validator_name="Tier 2 Deduplication")
+    result.add_warning(message)
+    result.metadata["skipped"] = True
+    return result
+
+
+def test_compact_skip_reason_keeps_setup_instructions() -> None:
+    from skillevaluator.reporting.console_ui import summarize_tier2
+
+    ran, ok, _rows, reason = summarize_tier2([_skipped_tier2(_PROVIDER_SKIP_MESSAGE)])
+
+    assert not ran and ok
+    assert reason.splitlines() == [
+        "Tier 2 skipped: embedding setup is required.",
+        "No provider is configured.",
+        "For example, set:",
+        "export SKILL_EVAL_EMBEDDING_PROVIDER=openai",
+        "export OPENAI_API_KEY='your-api-key'",
+        "To skip Tier 2, pass --no-dedup.",
+    ]
+
+
+def test_compact_skip_reason_stays_bounded_and_inert() -> None:
+    import unicodedata
+
+    from skillevaluator.reporting.console_ui import summarize_tier2
+
+    hostile = "\n".join(
+        [
+            "\x1b]8;;https://example.invalid\x07click\x1b]8;;\x07 \x1b[31mred\u202e " + "x" * 500,
+            *(f"line {index}" for index in range(40)),
+        ]
+    )
+
+    _ran, _ok, _rows, reason = summarize_tier2([_skipped_tier2(hostile)])
+    lines = reason.splitlines()
+
+    assert len(lines) == 12
+    assert all(len(line) <= 110 for line in lines)
+    assert lines[0].startswith("click red ")
+    assert lines[-1].endswith("\u2026")
+    assert not any(unicodedata.category(character).startswith("C") for character in reason.replace("\n", ""))
+
+
+def test_view_renders_multi_line_skip_reason_on_continuation_rows(capsys) -> None:
+    from skillevaluator.reporting.console_ui import ValidateView, summarize_tier2
+
+    _ran, _ok, _rows, reason = summarize_tier2([_skipped_tier2(_PROVIDER_SKIP_MESSAGE)])
+    view = ValidateView(
+        skill="skill: demo",
+        tiers=[(1, "Static & Security", "static & security"), (2, "Deduplication", "deduplication")],
+    )
+
+    view.start()
+    view.tier_start(0)
+    view.tier_done(0, failed=False, rows=[])
+    view.tier_skip(1, reason)
+    view.stop()
+
+    output = _plain_text(capsys.readouterr().out)
+    assert "skipped     Tier 2 skipped: embedding setup is required." in output
+    assert "export OPENAI_API_KEY='your-api-key'" in output
+    assert "To skip Tier 2, pass --no-dedup." in output
+
+
 def test_tier3_evaluate_visible_copy_owns_its_params() -> None:
     # The visible tier3 registration is a copy of the hidden top-level
     # command; sharing the mutable params list would let registration on one

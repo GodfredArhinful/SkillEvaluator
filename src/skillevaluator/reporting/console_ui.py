@@ -68,6 +68,10 @@ LABEL = 12
 DUR = 8
 BAR = 10
 _SKIP_REASON_MAX_CHARS = 110
+# Setup instructions in a skip reason span several short lines (provider
+# variables, a docs link, the flag that skips the tier); keep them readable.
+_SKIP_REASON_MAX_LINES = 12
+_SKIP_REASON_SOURCE_MAX_CHARS = 4096
 _TIER3_TEXT_MAX_CHARS = 110
 SPIN = "◐◓◑◒"
 
@@ -293,7 +297,9 @@ class ValidateView:
             return
         block = self.blocks[index]
         block.status = SKIP
-        block.rows = [TierRow("skipped", [(reason, MUTED)])]
+        # Multi-line reasons (setup instructions) continue on unlabeled rows.
+        lines = reason.split("\n") or [""]
+        block.rows = [TierRow("skipped" if index == 0 else "", [(line, MUTED)]) for index, line in enumerate(lines)]
         self._refresh()
         self._flush_static()
 
@@ -533,12 +539,62 @@ def _is_skipped(result: ValidationResult) -> bool:
     return payload.get("execution_status") == "skipped" or summary.get("execution_status") == "skipped"
 
 
+def _bounded_console_line(line: str) -> str:
+    """Flatten one line of untrusted text and bound it for the compact view."""
+    flattened = " ".join(
+        "".join(
+            " " if character.isspace() or unicodedata.category(character).startswith("C") else character
+            for character in line
+        ).split()
+    )
+    if len(flattened) <= _SKIP_REASON_MAX_CHARS:
+        return flattened
+    return flattened[: _SKIP_REASON_MAX_CHARS - 1] + "…"
+
+
+def _raw_skip_reason(result: ValidationResult) -> str:
+    """Return the untrusted reason text that ``get_skip_reason`` would select."""
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    payload = metadata.get("agent_eval")
+    provenance = payload.get("provenance") if isinstance(payload, dict) else None
+    candidates = (
+        metadata.get("skip_reason"),
+        provenance.get("message") if isinstance(provenance, dict) else None,
+        result.warnings[0] if result.warnings else None,
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if not isinstance(candidate, str):
+            # Non-text metadata keeps the shared single-line projection.
+            return ""
+        if _bounded_console_line(strip_terminal_controls(candidate)):
+            return candidate
+    return ""
+
+
 def _skip_reason(result: ValidationResult) -> str:
-    """Return one bounded, single-line reason for the compact console view."""
-    reason = " ".join(get_skip_reason(result).replace("\r\n", "\n").replace("\r", "\n").split())
-    if len(reason) <= _SKIP_REASON_MAX_CHARS:
-        return reason
-    return reason[: _SKIP_REASON_MAX_CHARS - 1] + "…"
+    """Return a bounded, terminal-safe reason that keeps its line structure.
+
+    Each line is flattened and bounded separately, and at most
+    ``_SKIP_REASON_MAX_LINES`` lines are kept, so setup instructions stay
+    readable while escapes, controls, and oversized text cannot reach the
+    terminal.
+    """
+    raw = _raw_skip_reason(result)
+    if not raw:
+        return _bounded_console_line(get_skip_reason(result))
+    sample = strip_terminal_controls(raw[:_SKIP_REASON_SOURCE_MAX_CHARS])
+    lines = [
+        bounded
+        for line in sample.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if (bounded := _bounded_console_line(line))
+    ]
+    truncated = len(raw) > _SKIP_REASON_SOURCE_MAX_CHARS or len(lines) > _SKIP_REASON_MAX_LINES
+    lines = lines[:_SKIP_REASON_MAX_LINES]
+    if truncated and lines and not lines[-1].endswith("…"):
+        lines[-1] = lines[-1][: _SKIP_REASON_MAX_CHARS - 1] + "…"
+    return "\n".join(lines)
 
 
 def sanitize_tier3_console_text(value: object, *, limit: int = _TIER3_TEXT_MAX_CHARS) -> str:
