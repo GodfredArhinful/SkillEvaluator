@@ -22,6 +22,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 from skillevaluator.cli import cli
+from skillevaluator.provider_config import CHAT_DEFAULT_ANTHROPIC, CHAT_DEFAULT_OPENAI
 from skillevaluator.tier3_environments import (
     HARBOR_ENVIRONMENT_ALIAS_KWARGS,
     HARBOR_ENVIRONMENT_EXTRAS,
@@ -179,10 +180,10 @@ def test_harbor_dependency_contract_keeps_base_install_isolated() -> None:
 
 def test_harbor_environment_extra_mapping_matches_installed_metadata() -> None:
     provided_extras = set(metadata("harbor").get_all("Provides-Extra") or ())
-    system_or_base_backends = {"docker", "openshift", "apple-container", "singularity"}
+    system_or_base_backends = {"docker", "kata", "openshift", "apple-container", "singularity"}
 
-    assert len(HARBOR_ENVIRONMENTS) == 26
-    assert len(HARBOR_NATIVE_ENV_MODES) == 25
+    assert len(HARBOR_ENVIRONMENTS) == 27
+    assert len(HARBOR_NATIVE_ENV_MODES) == 26
     assert frozenset(HARBOR_ENVIRONMENTS) - {"local"} == HARBOR_NATIVE_ENV_MODES
     assert set(HARBOR_ENVIRONMENT_EXTRAS) == HARBOR_NATIVE_ENV_MODES
     assert {mode for mode, extra in HARBOR_ENVIRONMENT_EXTRAS.items() if extra is None} == system_or_base_backends
@@ -316,8 +317,8 @@ def test_public_docs_match_harbor_environment_and_kwarg_contract() -> None:
     public_docs = f"{agents}\n{cli_reference}\n{configuration}\n{tier3}\n{eval_config}"
     normalized_docs = " ".join(public_docs.split())
 
-    assert "26 environment modes" in public_docs
-    assert "25 Harbor-native backends" in public_docs
+    assert "27 environment modes" in public_docs
+    assert "26 Harbor-native backends" in public_docs
     assert "All 16 values" not in public_docs
     assert "same 16 values" not in public_docs
     assert "14 additional Harbor-native backends" not in public_docs
@@ -792,9 +793,9 @@ def test_public_docs_show_external_nvidia_build_harness_paths_only() -> None:
     tier3 = (REPO_ROOT / "docs" / "tier3-live-evaluation.mdx").read_text(encoding="utf-8")
     public_docs = f"{readme}\n{configuration}\n{tier3}"
 
-    assert "gpt-5.6-sol" in public_docs
+    assert f"`{CHAT_DEFAULT_OPENAI}`" in public_docs
     assert "gpt-5.4-mini" in public_docs
-    assert "claude-opus-5" in public_docs
+    assert f"`{CHAT_DEFAULT_ANTHROPIC}`" in public_docs
     assert "nvidia/nemotron-3-super-120b-a12b" in public_docs
     assert "nvidia/nvidia/nemotron-3-super-120b-a12b" in public_docs
     assert "Nemotron Super" in public_docs
@@ -808,7 +809,7 @@ def test_public_docs_show_external_nvidia_build_harness_paths_only() -> None:
     assert "skillevaluator tier3 evaluate ./my-skill --agents claude-code --env-mode docker\n" in tier3
     assert "Explicit model overrides are preserved exactly" in public_docs
     assert "OpenCode renders it as" in public_docs
-    assert "Docker or local compatibility bridge" in public_docs
+    assert "in-container (Docker and Kata) or local compatibility bridge" in public_docs
     assert "experimental Claude Code" in public_docs
 
 
@@ -887,7 +888,7 @@ def test_launch_docs_address_scanner_and_naming_ambiguities() -> None:
     normalized_quickstart = " ".join(quickstart.split())
 
     assert "brew install semgrep gitleaks" in quickstart
-    assert "uv tool install git+https://github.com/NVIDIA/SkillSpector.git" in quickstart
+    assert "uv tool install git+https://github.com/NVIDIA/SkillSpector.git@v2.12.0" in quickstart
     assert "Semgrep, SkillSpector, and Gitleaks" in quickstart
     assert "missing scanner evidence leaves the result `INCOMPLETE` and exits `1`" in normalized_quickstart
     assert "most often Gitleaks" not in ci
@@ -895,6 +896,23 @@ def test_launch_docs_address_scanner_and_naming_ambiguities() -> None:
     assert "`SKILL_EVAL_*` covers provider and model configuration" in " ".join(environment.split())
     assert "`SKILLEVALUATOR_*` covers product-level validation" in " ".join(environment.split())
     assert "are not interchangeable" in environment
+
+
+def test_skillspector_install_instructions_pin_one_release() -> None:
+    sources = [
+        REPO_ROOT / "README.md",
+        *(REPO_ROOT / "docs").rglob("*.mdx"),
+        *(REPO_ROOT / "src" / "skillevaluator").rglob("*.py"),
+    ]
+    install_specs = {
+        spec
+        for path in sources
+        for spec in re.findall(
+            r"git\+https://github\.com/NVIDIA/SkillSpector\.git[^\s`\"]*", path.read_text(encoding="utf-8")
+        )
+    }
+
+    assert install_specs == {"git+https://github.com/NVIDIA/SkillSpector.git@v2.12.0"}
 
 
 def test_ci_sarif_merge_uses_uv_tool_python() -> None:

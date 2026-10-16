@@ -294,7 +294,7 @@ documents. An eval entry's `files` string or list selects only those paths
 | File | Rules |
 | --- | --- |
 | `Dockerfile` | At most 20 KB; the first non-comment line must be `FROM`. The build context is `environment/` itself, so `COPY` paths are relative to it (`COPY skills/`, not `COPY environment/skills/`). If absent, an image is auto-generated from `scripts/requirements.txt` and `scripts/apt-packages.txt` on a `python:3.12-slim` base. |
-| `docker-compose.yaml` | Sidecar services only (databases, APIs, mock servers) launched alongside the agent container. A strict allowlist applies: host port mappings are removed, and host mounts, privileged access, and unrecognized keys are rejected. Also accepted as `docker-compose.yml`. |
+| `docker-compose.yaml` | Sidecar services only (databases, APIs, mock servers) launched alongside the agent container. Not supported with `--env-mode kata`, where services cannot resolve each other by name. A strict allowlist applies: host port mappings are removed, and host mounts, privileged access, and unrecognized keys are rejected. Also accepted as `docker-compose.yml`. |
 | `mcp_servers.toml` | MCP servers injected into the container. TOML array-of-tables `[[mcp_servers]]`; each entry needs `name` plus `url` or `command`. Command-based servers use `transport = "stdio"` (auto-inferred); URL-based servers default to `sse`. |
 | Subdirectories | Copied into the container environment (config files, seed data for sidecars). Any name except `__pycache__` and `.git`. |
 
@@ -307,6 +307,25 @@ url = "http://localhost:8080"
 name = "my-tool"
 command = "python /workspace/tools/server.py"
 transport = "stdio"
+```
+
+<Note>
+  In Docker mode, Claude Code and Codex setup no longer installs the
+  distribution `nodejs` and `npm` packages, except on Alpine images. On
+  Debian-based images, including the default `python:3.12-slim` image, those
+  packages also brought `npx` and a C/C++ toolchain (`gcc`, `g++`, `make`).
+  Claude Code containers now have no Node.js unless the image provides it.
+  Codex installs its own Node.js, which is on `PATH` only for the Codex process
+  and the commands it runs. If your skill's scripts, its tasks, or a stdio MCP
+  server (for example `command = "npx ..."`) need these tools, install them in
+  the image: list the packages in `scripts/apt-packages.txt`, one per line, for
+  the auto-generated image, or install them in `evals/environment/Dockerfile`.
+</Note>
+
+```text title="my-skill/scripts/apt-packages.txt"
+nodejs
+npm
+build-essential
 ```
 
 ## Validate before you run

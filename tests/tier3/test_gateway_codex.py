@@ -30,7 +30,7 @@ def test_gateway_adapter_selection_preserves_other_routes(provider, mode, agent)
     expected = runner._nvidia_build_agent_import_path(config, agent, mode)
     if provider == "openai-compatible" and mode != "local" and agent == "codex":
         expected = "skillevaluator.tier3.harbor.local_agents:SkillEvaluatorGatewayCodex"
-    if provider == "openai-compatible" and mode == "docker" and agent == "opencode":
+    if provider == "openai-compatible" and mode in {"docker", "kata"} and agent == "opencode":
         expected = "skillevaluator.tier3.harbor.local_agents:SkillEvaluatorGatewayOpenCode"
     assert runner._agent_import_path(config, agent, mode) == expected
 
@@ -39,7 +39,7 @@ def test_gateway_adapter_selection_preserves_other_routes(provider, mode, agent)
 @pytest.mark.parametrize(
     ("provider", "configured_model", "cli_model", "expected_model", "expected_source"),
     [
-        ("openai-compatible", None, None, "openai/openai/gpt-5.6-sol", "openai-compatible agent default"),
+        ("openai-compatible", None, None, "openai/openai/gpt-6.1-sol", "openai-compatible agent default"),
         ("openai-compatible", "openai/openai/gpt-5.6-sol", None, "openai/openai/gpt-5.6-sol", "evals/config.yml"),
         ("openai-compatible", "openai/openai/gpt-5.6-sol", "azure/custom/deployment", "azure/custom/deployment", "CLI"),
         ("openai-compatible", None, "custom-deployment", "custom-deployment", "CLI"),
