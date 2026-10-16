@@ -1318,14 +1318,18 @@ def _policy_metrics_from_agents(
 
 
 def _is_custom_only_agent(info: dict[str, Any]) -> bool:
-    """Return whether an agent's with-skill condition is scored only by its custom grader."""
+    """Return whether every condition of an agent is scored only by its custom grader."""
     from skillevaluator.tier3.harbor.metrics import CUSTOM_SCORE_POLICY
     from skillevaluator.tier3.harbor.report_data import metrics_for_condition
 
-    recorded = info.get("score_policy_with_skill")
-    if isinstance(recorded, str) and recorded.strip():
-        return recorded.strip() == CUSTOM_SCORE_POLICY
-    return not metrics_for_condition(info, "with_skill")
+    recorded = {
+        policy.strip()
+        for condition in ("with_skill", "without_skill")
+        if isinstance(policy := info.get(f"score_policy_{condition}"), str) and policy.strip()
+    }
+    if recorded:
+        return recorded == {CUSTOM_SCORE_POLICY}
+    return not metrics_for_condition(info, "with_skill") and not metrics_for_condition(info, "without_skill")
 
 
 def _recorded_score_policies(agents: dict[str, dict[str, Any]]) -> set[str]:
