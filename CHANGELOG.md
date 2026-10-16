@@ -101,8 +101,10 @@ All notable changes to SkillEvaluator are documented in this file.
   persist `skill-evaluator-dimension-mean-v1`; legacy and partial artifacts
   retain their historical semantics. Conditions keep their own recorded metric
   sets; overall lift and best-agent rankings are omitted across different
-  standard metric sets while individual scores are preserved. Custom-only
-  agents keep their grader's own overall and are ranked against standard agents
+  standard metric sets while individual scores are preserved, and
+  `tier3 compare` refuses standard agents with different policies or metric
+  sets. Custom-only agents keep their grader's own overall and are ranked and
+  compared against standard agents
   (Relates to [#61](https://github.com/NVIDIA/SkillEvaluator/issues/61)).
 - Preserve explicit Claude and OpenCode read failure metadata in reconstructed
   ATIF trajectories. Failed isolated SKILL.md reads and failed native Skill
