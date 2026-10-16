@@ -95,6 +95,20 @@ All notable changes to SkillEvaluator are documented in this file.
   `PASS` cards rendered by earlier releases fail the scan until they are
   regenerated; earlier `FAIL`, `NEUTRAL`, and `INCOMPLETE` cards without those
   lines are still accepted, and the lines are validated whenever present.
+- Report output must be outside the publication target. An explicit
+  `--output-dir` inside the evaluated skill is now rejected; use an external
+  directory. A default in-target `reports/` location relocates to an
+  authenticated sibling `<skill>-reports` (or `<catalog>-reports`), refuses
+  unowned collisions, and is excluded from Tier 3 runtime staging. Report roots
+  inside the target repository or an included-skill root are excluded from
+  linked or full-repository context only after they are reserved or
+  authenticated as generated output, so an authored subtree is never silently
+  omitted.
+- A custom Tier 3 `--results-dir` inside the evaluated skill is now rejected;
+  use the canonical `evals/results` path or an external results root.
+- `validate --block-on-agent-eval` now passes the exit gate only for a completed
+  Tier 3 `PASS` verdict with complete attempt coverage. `NEUTRAL` and `FAIL`
+  verdicts exit 1; previously any completed, scored run passed.
 
 ### Fixed
 
@@ -160,34 +174,27 @@ All notable changes to SkillEvaluator are documented in this file.
   linked, or hidden in raw HTML. Tier 3 evidence now cross-checks complete
   per-condition attempt and error records, and the public-card gate rejects
   ambiguous structural headings, browser-rendered decision-text aliases, and
-  literal or entity-encoded Unicode control/format characters. Custom Tier 3
-  result roots inside the skill are rejected; use the canonical `evals/results`
-  path or an external results root.
+  literal or entity-encoded Unicode control/format characters. The source
+  identity is read without following links before and after each producer,
+  follows the host filesystem's case aliases, and records a bounded
+  source-change marker. Tier 3 runs that stage repository context, external
+  reference or workspace skills, or task inputs with `.git`, `.venv`,
+  `__pycache__`, or `node_modules` entries remain runnable but cannot certify
+  publication, and neither can a target whose authored paths below the root
+  use names that Tier 1 skips (such as `references/results/`).
 - Clean and not-applicable License, Code Risk, Secrets, and Dependency Audit
   runs now record structured execution evidence, so legitimate built-in Tier 1
   results can satisfy publication without relying on findings or errors.
-- Advisory skip reasons are bounded, flattened, control-free, and escaped for
-  terminal and Markdown output, preventing oversized metadata, Rich markup,
-  terminal escape sequences, or multiline text from corrupting reports.
-- Malformed SkillSpector issue paths containing NUL bytes or lone surrogates
-  now make the scan incomplete instead of crashing filesystem alias checks.
-- Publication source identity now seals forward, reverse, and final source reads,
-  normalizes filesystem case aliases, aligns Tier 1/Tier 2 and Tier 3 runtime
-  projections with the v2 generated-artifact exclusions, and carries a bounded
-  source-change marker through rerendered Tier 3 evidence. Tier 3 runs with any
-  staged repository projection or external reference/workspace skills remain
-  runnable but cannot certify publication until those inputs have their own
-  versioned identity.
-- Report output is required outside the publication target. A default
-  in-target `reports/` location relocates to an authenticated sibling
-  `<skill>-reports` (or `<catalog>-reports`), refuses unowned collisions, and is
-  excluded from Tier 3 runtime staging. Report roots inside the target repository
-  or an included-skill root are excluded from linked or full-repository context
-  only after they are reserved or authenticated as generated output, preventing
-  an authored subtree from being silently omitted.
-- Public benchmark provenance now rejects placeholder identities, malformed or
-  future calendar dates, missing duplicated run IDs, hostile benchmark-policy
-  metadata, and environment-label substitutions in required proof fields.
+- Skip reasons are bounded, control-free, and escaped in reports and in the
+  terminal, so oversized metadata, Rich markup, or terminal escape sequences
+  cannot corrupt them. Reports show one line; the pipeline view keeps the
+  reason's line breaks.
+- SkillSpector issue paths with NUL bytes or lone surrogates now make the
+  security scan incomplete instead of being accepted.
+- The public benchmark gate rejects `PASS` cards with placeholder identities,
+  malformed or future evaluation dates, a missing Tier 3 run ID, hostile
+  benchmark-policy metadata, or environment-label substitutions in required
+  proof fields.
 - Hardened Tier 3 HTML and Markdown reporting against recursive or malformed
   display metadata, Markdown structure injection, and inline-JavaScript
   injection through untrusted agent or skill names.

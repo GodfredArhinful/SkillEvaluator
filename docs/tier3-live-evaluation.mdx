@@ -462,7 +462,9 @@ cloud backend for untrusted code.
 Attached to `validate`, Tier 3 is advisory by default: its results appear in the
 combined reports without changing the exit code. Add `--block-on-agent-eval`
 to make its findings gate, including evidence that the selected YAML/JSON
-dataset or native Harbor source is missing or invalid. Autopilot is enabled
+dataset or native Harbor source is missing or invalid. A blocking Tier 3 passes
+only with a completed `PASS` verdict and complete attempt coverage; `NEUTRAL`
+and `FAIL` verdicts exit 1. Autopilot is enabled
 by default for skills: it generates one starter case when no source exists and
 reuses valid existing sources unchanged. `--full` remains supported but is
 unnecessary. Use `--tiers 1,2` or `--no-tier3` to skip live evaluation;
