@@ -786,6 +786,11 @@ def _run_agent_eval_or_skip(
     describing why Tier 3 could not run. Tier 3 remains advisory by default,
     and callers can opt into blocking behavior.
     """
+    from skillevaluator.publication_identity import publication_target_name
+
+    # Persist the entry name that publication targets record, not a lexical
+    # alias that a case- or normalization-insensitive filesystem accepted.
+    skill_name = publication_target_name(target_path) or target_path.name
     if validate_source:
         from skillevaluator.evaluation.tier3_report import dataset_required_result
         from skillevaluator.tier3.evals_spec import validate_tier3_source
@@ -797,7 +802,7 @@ def _run_agent_eval_or_skip(
                 target_path / "evals" / "evals.json",
                 source_errors,
                 blocking=block_on_agent_eval,
-                skill_name=target_path.name,
+                skill_name=skill_name,
                 source_kind=source_kind,
             )
 
@@ -842,7 +847,7 @@ def _run_agent_eval_or_skip(
         # decides whether this failure is advisory or blocking.
         return advisory_skip_result(
             f"Tier 3 live evaluation skipped: {exc}",
-            skill_name=target_path.name,
+            skill_name=skill_name,
         )
 
     if failure := service.failure_reason(engine_result):
@@ -857,7 +862,7 @@ def _run_agent_eval_or_skip(
             return partial
         return advisory_skip_result(
             f"Tier 3 live evaluation did not complete: {failure}",
-            skill_name=target_path.name,
+            skill_name=skill_name,
         )
 
     try:
@@ -870,12 +875,12 @@ def _run_agent_eval_or_skip(
     except Exception as exc:
         return advisory_skip_result(
             f"Tier 3 result normalization failed: {exc}",
-            skill_name=target_path.name,
+            skill_name=skill_name,
         )
     if result is None:
         return advisory_skip_result(
             "Tier 3 live evaluation produced no parseable results.",
-            skill_name=target_path.name,
+            skill_name=skill_name,
         )
     return result
 
@@ -1886,6 +1891,12 @@ def validate(
     if dedup:
         _reject_linked_tier2_root(target_path)
     target_path = target_path.resolve()
+    from skillevaluator.publication_identity import publication_target_name
+
+    # A case- or normalization-insensitive filesystem lets an alias such as
+    # ``SIMPLE`` open the entry recorded as ``simple``. Every tier stamps the
+    # recorded spelling, so reports must expect it instead of the alias.
+    publication_name = publication_target_name(target_path) or target_path.name
     evaluated_source = _evaluated_source_from_options(
         evaluated_source_repository,
         evaluated_source_revision,
@@ -2232,7 +2243,7 @@ def validate(
         basename=report_basename_value,
         policy=policy,
         target_path=target_display,
-        expected_skill_name=target_path.name,
+        expected_skill_name=publication_name,
         content_label=content_label,
         announce_paths=not quiet,
         sarif_scan_root=target_path,
@@ -2254,7 +2265,7 @@ def validate(
         # stays as the last line of defence: the renderer re-validates the
         # carriers it is handed, and a producer can record one after the fact.
         try:
-            BenchmarkReporter(skill_name=target_path.name).save(results, output_dir / BENCHMARK_FILENAME)
+            BenchmarkReporter(skill_name=publication_name).save(results, output_dir / BENCHMARK_FILENAME)
         except EvaluatedSourceConflict as exc:
             # Publication fails closed on a contradictory identity, so report which
             # values disagreed rather than letting the card write a guess.

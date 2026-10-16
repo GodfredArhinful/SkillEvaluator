@@ -566,11 +566,15 @@ def render_agent_eval_html_report(
         }
 
     target = output_path.expanduser().resolve() if output_path is not None else run_dir / "report.html"
+    from skillevaluator.publication_identity import publication_target_name
+
     reporter = HTMLReporter(
         target_path=str(skill_path),
         content_label="Skill",
         tabs=[{"id": "tier3", "label": "Tier 3: Live Agent Evaluation"}],
-        expected_skill_name=skill_path.name,
+        # The run records the filesystem entry name, which a lexical alias
+        # on a case- or normalization-insensitive filesystem need not match.
+        expected_skill_name=publication_target_name(skill_path) or skill_path.name,
     )
     reporter.save([result], target)
     return target

@@ -597,6 +597,24 @@ def _canonical_directory_entry_name(path: Path) -> str:
     raise ValueError(f"publication source directory entry is ambiguous: {path}")
 
 
+def publication_target_name(target_path: Path) -> str | None:
+    """Return the NFC entry name that publication targets record for a path.
+
+    On a case- or normalization-insensitive filesystem a lexical alias such as
+    ``SIMPLE`` can open the entry recorded as ``simple``. Every tier stamps the
+    recorded spelling, so report expectations must use it instead of the alias.
+    """
+    try:
+        target = _absolute_lexical(target_path.expanduser())
+        skill_name = unicodedata.normalize("NFC", _canonical_directory_entry_name(target))
+        if not skill_name:
+            return None
+        skill_name.encode("utf-8", errors="strict")
+    except (OSError, RuntimeError, UnicodeError, ValueError):
+        return None
+    return skill_name
+
+
 def publication_target_from_path(target_path: Path) -> dict[str, str] | None:
     """Return the canonical publication target for one source snapshot."""
     try:
@@ -724,6 +742,7 @@ __all__ = [
     "finalize_publication_target",
     "publication_source_digest",
     "publication_target_from_path",
+    "publication_target_name",
     "stamp_publication_identity",
     "stamp_publication_target",
 ]

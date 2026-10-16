@@ -510,6 +510,109 @@ def test_validate_rejects_case_alias_output_inside_publication_target(
     assert publication_target_from_path(skill) == initial_target
 
 
+def _same_entry_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recorded_name: str,
+    alias_name: str,
+) -> Path:
+    """Return a lexical alias that opens the skill entry recorded as *recorded_name*.
+
+    Case- and normalization-insensitive filesystems (the macOS and Windows
+    defaults) provide such aliases natively. Elsewhere, simulate one: create
+    the entry under the alias spelling and let its parent directory report the
+    recorded spelling, as an insensitive filesystem does.
+    """
+    from skillevaluator import publication_identity
+
+    recorded = tmp_path / recorded_name
+    shutil.copytree(FIXTURE, recorded)
+    alias = tmp_path / alias_name
+    if alias.exists() and alias.samefile(recorded) and {entry.name for entry in tmp_path.iterdir()} == {recorded_name}:
+        return alias
+    shutil.rmtree(recorded)
+    shutil.copytree(FIXTURE, alias)
+    entry_name = publication_identity._canonical_directory_entry_name
+
+    def recorded_entry_name(path: Path) -> str:
+        name = entry_name(path)
+        return recorded_name if name == alias_name else name
+
+    monkeypatch.setattr(publication_identity, "_canonical_directory_entry_name", recorded_entry_name)
+    return alias
+
+
+@pytest.mark.parametrize(
+    ("recorded_name", "alias_name"),
+    [("simple", "SIMPLE"), ("caf\u00e9", "cafe\u0301"), ("caf\u00e9", "CAFE\u0301")],
+    ids=["case", "unicode-normalization", "case-and-normalization"],
+)
+def test_validate_same_entry_alias_expects_recorded_publication_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recorded_name: str,
+    alias_name: str,
+) -> None:
+    alias = _same_entry_alias(monkeypatch, tmp_path, recorded_name, alias_name)
+    output_dir = tmp_path / "reports"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "validate",
+            str(alias),
+            "--no-llm",
+            "--no-autopilot",
+            "--tiers",
+            "1,3",
+            "--checks",
+            "version,lint",
+            "--report",
+            "json",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    benchmark = (output_dir / "BENCHMARK.md").read_text(encoding="utf-8")
+    report = json.loads(next(output_dir.glob("skillevaluator-output-*.json")).read_text(encoding="utf-8"))
+    assert f"# Skill Benchmark: {recorded_name}" in benchmark
+    assert "| Tier 1 | Static validation | **PASSED** |" in benchmark
+    assert report["tier3"]["skill_name"] == recorded_name
+    assert report["tier3"]["summary"]["skill_name"] == recorded_name
+    identity_reasons = [
+        reason
+        for reason in report["publication"]["reasons"]
+        if "different" in reason or "conflicting" in reason or "Tier 1" in reason
+    ]
+    assert identity_reasons == []
+
+
+def test_tier3_run_report_expects_recorded_publication_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from skillevaluator.evaluation import tier3_report
+    from skillevaluator.models.result import ValidationResult
+    from skillevaluator.reporting import HTMLReporter
+
+    alias = _same_entry_alias(monkeypatch, tmp_path, "simple", "SIMPLE")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    expected_names: list[str | None] = []
+    monkeypatch.setattr(
+        tier3_report,
+        "agent_eval_result_from_directory",
+        lambda *_args, **_kwargs: ValidationResult(validator_name="AGENT_EVAL"),
+    )
+    monkeypatch.setattr(HTMLReporter, "save", lambda self, *_args: expected_names.append(self.expected_skill_name))
+
+    tier3_report.render_agent_eval_html_report(alias, run_dir)
+
+    assert expected_names == ["simple"]
+
+
 def test_validate_rejects_arbitrary_in_skill_report_output_before_validation(tmp_path: Path) -> None:
     from skillevaluator.publication_identity import publication_target_from_path
 
