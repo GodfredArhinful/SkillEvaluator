@@ -46,6 +46,8 @@ _PRODUCER_BY_TIER = {tier: f"skillevaluator.tier{tier}" for tier in _RECOGNIZED_
 TIER1_PUBLICATION_CORE_CHECKS = frozenset({"schema", "security", "pii", "license", "code-integrity", "unicode"})
 TIER1_PUBLICATION_SKILL_CHECKS = frozenset({"version", "quality", "lint"})
 TIER1_REQUIRED_CHECKS_KEY = "tier1_required_checks"
+# Certified source paths below the target root that Tier 1 skipped by name.
+TIER1_UNSCANNED_PATHS_KEY = "tier1_unscanned_paths"
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,7 @@ __all__ = [
     "TIER1_PUBLICATION_CORE_CHECKS",
     "TIER1_PUBLICATION_SKILL_CHECKS",
     "TIER1_REQUIRED_CHECKS_KEY",
+    "TIER1_UNSCANNED_PATHS_KEY",
     "PublicationEvidenceIdentity",
     "declared_tier1_required_checks",
     "publication_evidence_dict",

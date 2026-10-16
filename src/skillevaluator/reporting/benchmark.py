@@ -46,6 +46,7 @@ from skillevaluator.reporting.base import (
     result_has_execution_evidence,
     result_matches_publication_target,
     select_agent_eval_payload,
+    tier1_unscanned_publication_paths,
     unrecognized_tier2_results,
 )
 from skillevaluator.source_identity import evaluated_source_revision, recorded_evaluated_source
@@ -1156,6 +1157,10 @@ def _tier_status(
 
     if tier == "Tier 1" and (missing_checks := missing_tier1_publication_checks(publication_results)):
         return "INCOMPLETE", f"Required Tier 1 checks did not run: {', '.join(missing_checks)}"
+
+    if tier == "Tier 1" and (unscanned_paths := tier1_unscanned_publication_paths(publication_results)):
+        shown = ", ".join(unscanned_paths[:5]) + (", ..." if len(unscanned_paths) > 5 else "")
+        return "INCOMPLETE", f"Tier 1 skipped certified paths with generated-artifact names: {shown}"
 
     skipped = [result for result in publication_results if is_cleanly_skipped(result)]
     if tier in {"Tier 1", "Tier 2"} and skipped:

@@ -39,6 +39,7 @@ from skillevaluator.constants import (
 )
 from skillevaluator.publication_evidence import (
     TIER1_REQUIRED_CHECKS_KEY,
+    TIER1_UNSCANNED_PATHS_KEY,
     declared_tier1_required_checks,
     result_publication_evidence,
 )
@@ -1938,6 +1939,30 @@ def missing_tier1_publication_checks(results: list[ValidationResult]) -> tuple[s
     return tuple(sorted(required - covered))
 
 
+def tier1_unscanned_publication_paths(results: list[ValidationResult]) -> tuple[str, ...]:
+    """Return certified source paths that recognized Tier 1 runs skipped by name.
+
+    A malformed record fails closed with a placeholder entry.
+    """
+    paths: list[str] = []
+    for result in results:
+        producer = result_publication_evidence(result)
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        if (
+            producer is None
+            or producer.tier != 1
+            or is_cleanly_skipped(result)
+            or TIER1_UNSCANNED_PATHS_KEY not in metadata
+        ):
+            continue
+        value = metadata[TIER1_UNSCANNED_PATHS_KEY]
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+            paths.append("(unreadable Tier 1 scan scope)")
+            continue
+        paths.extend(value)
+    return tuple(dict.fromkeys(paths))
+
+
 def unrecognized_tier2_results(results: list[ValidationResult]) -> list[ValidationResult]:
     """Return executed Tier 2 results that lack a recognized built-in producer.
 
@@ -2327,6 +2352,11 @@ def assess_publication(
         reasons.append("Tier 1 lacks trustworthy execution evidence.")
     if missing_checks := missing_tier1_publication_checks(results):
         reasons.append(f"Tier 1 did not run every required check: {', '.join(missing_checks)}.")
+    if unscanned_paths := tier1_unscanned_publication_paths(results):
+        reasons.append(
+            f"Tier 1 skipped {len(unscanned_paths)} certified source path(s) that use generated-artifact names "
+            "below the skill root."
+        )
     require_bound_evidence(executed_tier1, "Tier 1")
 
     executed_tier2 = [result for result in tier2_results if not is_cleanly_skipped(result)]

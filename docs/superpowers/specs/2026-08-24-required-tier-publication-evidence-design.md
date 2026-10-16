@@ -42,8 +42,10 @@ the gap by validating only Tier 3 consistency.
   root generated state/result/version directories; `evals/results`; and the
   three generated root publication files. Filesystem aliases follow actual
   filesystem identity, and a same-named nested authored file remains covered.
-  Producer scans and Tier 3 agent-visible projections share this exclusion
-  contract. A Tier 3 projection that actually adds linked/full repository
+  Tier 3 agent-visible projections share this exclusion contract. Producer
+  scans skip generated-artifact names at any depth, so a Tier 1 run records any
+  certified path below the root that they skipped, and publication stays
+  INCOMPLETE until that path is renamed. A Tier 3 projection that actually adds linked/full repository
   context cannot certify publication until runtime context has its own
   versioned identity; full-mode selection can depend on excluded Git/operator
   state even when the repository root is the target. External reference or
