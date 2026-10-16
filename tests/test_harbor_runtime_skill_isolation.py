@@ -4945,7 +4945,7 @@ def test_runtime_projection_skips_linked_generated_entries(tmp_path: Path, link_
         encoding="utf-8",
     )
     try:
-        os.symlink(outside, skill / link_name, target_is_directory=True)
+        (skill / link_name).symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("symbolic links are unavailable on this platform")
 
