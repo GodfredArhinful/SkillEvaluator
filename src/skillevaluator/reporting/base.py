@@ -39,7 +39,11 @@ from skillevaluator.constants import (
 )
 from skillevaluator.publication_evidence import result_publication_evidence
 from skillevaluator.publication_identity import PUBLICATION_TARGET_DIGEST_ALGORITHM
-from skillevaluator.publication_text import publication_identity_present, publication_semantic_text
+from skillevaluator.publication_text import (
+    publication_free_text,
+    publication_identity_present,
+    publication_semantic_text,
+)
 from skillevaluator.utils.path_security import canonicalize_trusted_root_alias
 from skillevaluator.utils.rich_markup import strip_terminal_controls
 
@@ -493,6 +497,11 @@ def agent_eval_report_text_limit() -> int:
     return AGENT_EVAL_REPORT_MAX_TEXT_BYTES
 
 
+# Tier 3 identity subtrees whose text must survive emission exactly. Other
+# payload strings are free text that may contain layout whitespace.
+AGENT_EVAL_EXACT_TEXT_KEYS = frozenset({"publication_target", "skill_name"})
+
+
 def agent_eval_report_serialization_issue(value: object) -> str | None:
     """Return why Tier 3 cannot be emitted losslessly within report limits."""
     if not isinstance(value, dict):
@@ -503,11 +512,11 @@ def agent_eval_report_serialization_issue(value: object) -> str | None:
     max_depth, max_nodes = agent_eval_report_serialization_limits()
     max_text_bytes = agent_eval_report_text_limit()
     active_containers: set[int] = set()
-    stack: list[tuple[object, int, bool]] = [(value, 0, False)]
+    stack: list[tuple[object, int, bool, bool]] = [(value, 0, False, False)]
     nodes = 0
     text_bytes = 0
     while stack:
-        current, depth, exiting = stack.pop()
+        current, depth, exiting, exact_text = stack.pop()
         if exiting:
             active_containers.remove(id(current))
             continue
@@ -523,7 +532,9 @@ def agent_eval_report_serialization_issue(value: object) -> str | None:
             if len(current) > max_text_bytes - text_bytes:
                 return f"The Tier 3 payload exceeds the {max_text_bytes:,}-byte report text limit."
             utf8_safe = current.encode("utf-8", errors="replace").decode("utf-8")
-            normalized = publication_semantic_text(current)
+            # Free text keeps line breaks and tabs; identity text and every
+            # other control, format, or invisible character stay rejected.
+            normalized = publication_semantic_text(current) if exact_text else publication_free_text(current)
             if utf8_safe != current or normalized != unicodedata.normalize("NFKC", utf8_safe):
                 return "The Tier 3 payload contains text that cannot be emitted losslessly."
             text_bytes += len(normalized.encode("utf-8"))
@@ -549,7 +560,7 @@ def agent_eval_report_serialization_issue(value: object) -> str | None:
         if container_id in active_containers:
             return "The Tier 3 payload contains a recursive container."
         active_containers.add(container_id)
-        stack.append((current, depth, True))
+        stack.append((current, depth, True, exact_text))
         if isinstance(current, dict):
             safe_keys: set[str] = set()
             for key in current:
@@ -567,11 +578,11 @@ def agent_eval_report_serialization_issue(value: object) -> str | None:
                 if text_bytes > max_text_bytes:
                     return f"The Tier 3 payload exceeds the {max_text_bytes:,}-byte report text limit."
                 safe_keys.add(safe_key)
-            children = current.values()
+            children = [(child, exact_text or key in AGENT_EVAL_EXACT_TEXT_KEYS) for key, child in current.items()]
         else:
-            children = current
-        for child in reversed(children):
-            stack.append((child, depth + 1, False))
+            children = [(child, exact_text) for child in current]
+        for child, child_exact_text in reversed(children):
+            stack.append((child, depth + 1, False, child_exact_text))
     return None
 
 
@@ -1981,10 +1992,10 @@ def assess_tier3_evidence(
             selected_payload,
             "Tier 3 scanner evidence is incomplete.",
         )
-    if any(
-        not result.passed and (serialization_issue is not None or not is_cleanly_skipped(result))
-        for result in tier3_results
-    ):
+    # A cleanly skipped advisory result is non-passing by construction. When
+    # its payload cannot be emitted losslessly, the serialization branch below
+    # decides between an explicit failure and incomplete evidence.
+    if any(not result.passed and not is_cleanly_skipped(result) for result in tier3_results):
         return Tier3EvidenceAssessment(
             "fail",
             False,

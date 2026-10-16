@@ -2279,6 +2279,141 @@ def test_unrecognized_producers_cannot_certify_or_waive_publication(tmp_path: Pa
     assert offenders == []
 
 
+def _bound_tier1_and_tier2(skill_name: str) -> list[ValidationResult]:
+    tier1 = ValidationResult(validator_name="SCHEMA")
+    tier1.add_success("schema", "Schema passed")
+    tier2 = ValidationResult(validator_name="Similarity Check")
+    tier2.add_success("similarity_check", "Similarity scan completed")
+    _bind_publication_target([tier1, tier2], _publication_target(skill_name))
+    return [tier1, tier2]
+
+
+def _produced_tier3_result(skill_name: str, *, prompt: str, suggestion: str) -> ValidationResult:
+    """Build Tier 3 evidence through the real payload producer."""
+    from skillevaluator.evaluation.tier3_report import build_agent_eval_payload
+    from skillevaluator.tier3.harbor.metrics import DEFAULT_METRICS
+
+    conditions = {
+        name: {"execution_status": "succeeded", "execution_errors": [], "expected_attempts": 1, "scored_attempts": 1}
+        for name in ("with_skill", "without_skill")
+    }
+    payload = build_agent_eval_payload(
+        skill_name,
+        {
+            "codex": {
+                "model": "test-model",
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 2,
+                "scored_attempts": 2,
+                "conditions": conditions,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.9),
+                "without_skill": dict.fromkeys(DEFAULT_METRICS, 0.4),
+                "lift": dict.fromkeys(DEFAULT_METRICS, 0.5),
+                "rewards": [{"entry_id": "case-1", **dict.fromkeys(DEFAULT_METRICS, 0.9)}],
+                "rewards_baseline": [{"entry_id": "case-1", **dict.fromkeys(DEFAULT_METRICS, 0.4)}],
+            }
+        },
+        dataset=[{"id": "case-1", "expected_skill": skill_name, "prompt": prompt}],
+        attempt_policy={"max_attempts": 1, "pass_threshold": 0.5, "stop_on_pass": False},
+        env_mode="docker",
+        evaluated_at="2026-09-12T12:00:00+00:00",
+        evaluator_version="1.0.0",
+        run_id="multiline-run",
+        publication_target=_publication_target(skill_name),
+        use_llm_judge=False,
+    )
+    assert payload is not None
+    payload["suggestions"] = [suggestion]
+    result = _validation_result_from_payload(payload)
+    assert result is not None
+    return result
+
+
+def test_multiline_tier3_free_text_keeps_publication_and_report_data(tmp_path: Path) -> None:
+    prompt = "Summarize the notes below.\n\n- call the vendor\n\t- send the report"
+    suggestion = "Keep the summary short.\r\nList one action per line."
+    results = [*_bound_tier1_and_tier2("demo"), _produced_tier3_result("demo", prompt=prompt, suggestion=suggestion)]
+
+    benchmark = BenchmarkReporter(skill_name="demo", include_timestamp=False).render_all(results)
+    json_payload = json.loads(JSONReporter(include_timestamp=False, expected_skill_name="demo").render_all(results))
+    html = HTMLReporter(include_timestamp=False, expected_skill_name="demo").render_all(results)
+    markdown = MarkdownReporter(include_timestamp=False, expected_skill_name="demo").render_all(results)
+    benchmark_path = tmp_path / "BENCHMARK.md"
+    benchmark_path.write_text(benchmark, encoding="utf-8")
+    _files, offenders = benchmark_gate.find_offenders([benchmark_path])
+
+    assert "> \u2705 **Overall verdict: PASS" in benchmark
+    assert json_payload["publication_status"] == "pass"
+    assert _html_report_data(html)["publication"]["status"] == "pass"
+    assert "**Publication status:** \u2705 PASS" in markdown
+    assert offenders == []
+    # Line breaks and tabs survive emission instead of truncating the payload.
+    assert json_payload["tier3"]["dataset"][0]["prompt"] == prompt
+    assert json_payload["tier3"]["suggestions"] == [suggestion]
+    assert "_serialization_truncated" not in json_payload["tier3"]
+    html_payload = _html_tier3_payload(html)
+    assert html_payload["dataset"][0]["prompt"] == prompt
+    assert html_payload["overall_score"] == pytest.approx(0.9)
+    assert "_serialization_truncated" not in html_payload
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["zero-width-space", "terminal-escape", "bidi-override", "skill-name-line-break", "mapping-key-line-break"],
+)
+def test_tier3_text_check_still_rejects_controls_and_identity_line_breaks(mutation: str) -> None:
+    results = _publication_ready_results("STRICT-TEXT")
+    payload = results[-1].metadata["agent_eval"]
+    if mutation == "zero-width-space":
+        payload["suggestions"] = ["Keep\u200bgoing"]
+    elif mutation == "terminal-escape":
+        payload["suggestions"] = ["Keep \x1b[31mgoing"]
+    elif mutation == "bidi-override":
+        payload["suggestions"] = ["Keep \u202egoing"]
+    elif mutation == "skill-name-line-break":
+        payload["skill_name"] = payload["summary"]["skill_name"] = payload["skill_name"] + "\nother"
+    else:
+        payload["evaluators"]["accuracy\nother"] = {"with_skill": 0.9}
+
+    json_payload = json.loads(JSONReporter(include_timestamp=False).render_all(results))
+
+    assert json_payload["publication_status"] == "incomplete"
+    assert json_payload["publication"]["tier3"]["evidence_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Tier 3 live evaluation skipped: no provider is configured.\n\nSet:\n  export SKILL_EVAL_LLM_PROVIDER=openai",
+        "Tier 3 live evaluation skipped: \x1b[31mprovider error\x1b[0m",
+    ],
+    ids=["multi-line", "terminal-escape"],
+)
+def test_advisory_tier3_skip_with_unusual_text_is_not_a_failure(tmp_path: Path, message: str) -> None:
+    tier3 = advisory_skip_result(message, skill_name="demo")
+    tier3.metadata["gating"] = {"tier": 3, "blocking": False}
+    results = [*_bound_tier1_and_tier2("demo"), tier3]
+
+    benchmark = BenchmarkReporter(skill_name="demo", include_timestamp=False).render_all(results)
+    json_payload = json.loads(JSONReporter(include_timestamp=False, expected_skill_name="demo").render_all(results))
+    html_data = _html_report_data(
+        HTMLReporter(include_timestamp=False, expected_skill_name="demo").render_all(results)
+    )
+    markdown = MarkdownReporter(include_timestamp=False, expected_skill_name="demo").render_all(results)
+    benchmark_path = tmp_path / "BENCHMARK.md"
+    benchmark_path.write_text(benchmark, encoding="utf-8")
+    _files, offenders = benchmark_gate.find_offenders([benchmark_path])
+
+    assert "Overall verdict: INCOMPLETE" in benchmark
+    assert "| Tier 3 | Live agent evaluation | **FAIL** |" not in benchmark
+    assert json_payload["publication_status"] == "incomplete"
+    assert json_payload["publication"]["tier3"]["status"] in {"skipped", "incomplete"}
+    assert html_data["publication"]["status"] == "incomplete"
+    assert "**Publication status:** \u26a0\ufe0f INCOMPLETE" in markdown
+    assert offenders == []
+
+
 _OPTIONAL_TIER2_SHAPES = {
     "absent": "pass",
     "clean-skip-invalid-marker": "pass",
