@@ -85,9 +85,19 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Fixed
 
-- Derive accuracy scores from complete five-criterion verdicts in both judge
-  runtimes, so an inconsistent model-supplied total cannot distort Skill Lift.
-  Correct the Harbor prompt example to score five passing criteria as 1.0.
+- Tier 1 pyproject dependency audits now inspect static target declarations
+  rather than the evaluator environment. Exact direct pins (including optional
+  groups) are queried without installation or build-script execution;
+  unresolved declarations and invalid scanner evidence are incomplete.
+- Tier 1 PII scanning now includes `.mdc` rules and workflows.
+- Tier 3 negative-case accuracy excludes inapplicable skill identification and
+  records its scoring policy. Reports separately expose measured token and
+  agent execution-time differences with complete matching-arm coverage, while
+  efficiency continues to measure routing and productive tool use.
+- Derive accuracy scores from complete criterion verdicts in both judge
+  runtimes (passing applicable criteria divided by applicable criteria), so an
+  inconsistent model-supplied total cannot distort Skill Lift. Correct the
+  Harbor prompt example to score five passing criteria as 1.0.
 - Include schema-valid ATIF message content parts in final answers, conversation
   summaries, and judge evidence references in the host and Harbor verifier.
   Image and audio parts use markers without exposing their source paths.
