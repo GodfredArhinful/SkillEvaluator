@@ -47,6 +47,26 @@ from skillevaluator.source_identity import resolve_evaluated_source
 VERDICT_PASS = "pass"
 VERDICT_FAIL = "fail"
 VERDICT_NEUTRAL = "neutral"
+VERDICT_INCONCLUSIVE = "inconclusive"
+
+
+def _never_activated(agent: dict[str, Any]) -> bool:
+    activation = agent.get("skill_activation")
+    return isinstance(activation, dict) and activation.get("status") == "never_activated"
+
+
+def _activation_summary(info: dict[str, Any]) -> dict[str, Any]:
+    from skillevaluator.tier3.harbor.activation import summarize_skill_activation
+
+    # A retained summary covers all trials even when report loading is bounded.
+    summary = info.get("skill_activation")
+    if isinstance(summary, dict):
+        return dict(summary)
+    summary = summarize_skill_activation(info.get("rewards") or [])
+    if info.get("rewards_complete") is False and summary.get("status") == "never_activated":
+        summary = dict(summary, status="unknown", reason="Activation evidence is incomplete.")
+    return summary
+
 
 _AGENT_EVAL_VALIDATOR = "AGENT_EVAL"
 _AGENT_EVAL_DESCRIPTION = "Tier 3: Live Agent Evaluation (Harbor)"
@@ -784,6 +804,7 @@ def build_agent_eval_payload(
     summary = {
         "schema_version": _SCHEMA_VERSION,
         "verdict": verdict,
+        "skill_activation": best.get("skill_activation", {}),
         "skill_name": skill_name,
         "best_agent": best_agent,
         "agents_run": list(agent_payloads.keys()),
@@ -822,9 +843,20 @@ def build_agent_eval_payload(
         failure_message = "; ".join(execution_errors) or "Tier 3 evaluation did not produce a complete scored run"
         deterministic_conclusions = [{"severity": "fail", "title": "Evaluation incomplete", "message": failure_message}]
         deterministic_suggestions = [failure_message]
+    elif verdict == VERDICT_INCONCLUSIVE:
+        deterministic_conclusions = [
+            {
+                "severity": "warn",
+                "title": "Inconclusive: skill never activated",
+                "message": "The skill was never activated in any positive with-skill trial. Scores are diagnostic only; no lift verdict was computed.",
+            }
+        ]
+        deterministic_suggestions = ["Check skill loading and agent support, then rerun the evaluation."]
     else:
         deterministic_conclusions = _build_conclusions(
-            agent_payloads, best_dimensions, pass_threshold=_pass_threshold_from_policy(policy)
+            {name: agent for name, agent in agent_payloads.items() if not _never_activated(agent)},
+            best_dimensions,
+            pass_threshold=_pass_threshold_from_policy(policy),
         )
         deterministic_suggestions = _suggestions_for_dimensions(best_dimensions)
     recommendations = _attach_harbor_evidence_to_recommendations(
@@ -846,6 +878,7 @@ def build_agent_eval_payload(
         "summary": summary,
         "skill_name": skill_name,
         "verdict": verdict,
+        "skill_activation": summary["skill_activation"],
         "best_agent": best_agent,
         "agents_run": list(agent_payloads.keys()),
         "environment": env_mode,
@@ -880,7 +913,10 @@ def build_agent_eval_payload(
         "conclusions": list(deterministic_conclusions),
         "recommendations": recommendations,
         "suggestions": list(deterministic_suggestions),
-        "suggestions_v2": _attach_harbor_evidence_to_suggestions_v2(suggestions_v2 or [], evidence_links),
+        "suggestions_v2": _attach_harbor_evidence_to_suggestions_v2(
+            [] if any(_never_activated(agent) for agent in agent_payloads.values()) else (suggestions_v2 or []),
+            evidence_links,
+        ),
         "metric_ids": metric_ids,
         "supported_metric_ids": list(AGENT_EVAL_EVALUATORS),
         "metric_labels": metric_labels,
@@ -904,7 +940,9 @@ def build_agent_eval_payload(
         payload,
         deterministic_conclusions=deterministic_conclusions,
         deterministic_suggestions=deterministic_suggestions,
-        use_llm_judge=use_llm_judge and overall_score is not None,
+        use_llm_judge=use_llm_judge
+        and overall_score is not None
+        and not any(_never_activated(agent) for agent in agent_payloads.values()),
     )
     if evidence_links:
         payload["conclusions"] = _attach_harbor_evidence_to_conclusions(
@@ -1499,11 +1537,15 @@ def _build_agent(
 
     with_scores = info.get("with_skill") or {}
     without_scores = info.get("without_skill") or {}
+    skill_activation = _activation_summary(info)
+    never_activated = skill_activation.get("status") == "never_activated"
     condition_policies = {
         value.strip() if isinstance(value, str) and value.strip() else score_policy
         for value in (info.get("score_policy_with_skill"), info.get("score_policy_without_skill"))
     }
-    comparable_scores = set(with_metrics) == set(baseline_metrics) and len(condition_policies) == 1
+    comparable_scores = (
+        not never_activated and set(with_metrics) == set(baseline_metrics) and len(condition_policies) == 1
+    )
     lift_data = info.get("lift") or {}
     with_quality_available = _condition_quality_available(info, "with_skill")
     baseline_quality_available = _condition_quality_available(info, "without_skill")
@@ -1519,6 +1561,16 @@ def _build_agent(
         info.get("dimensions_with_skill") or {},
         info.get("dimensions_without_skill") or {},
     )
+    if never_activated:
+        for evaluator in evaluators.values():
+            evaluator["lift"] = None
+        for dimension in dimensions:
+            dimension.update(
+                lift=None,
+                verdict=VERDICT_INCONCLUSIVE,
+                explanation="Skill never activated; scores are diagnostic only.",
+                reasoning_bullets=["Skill never activated; no skill-effectiveness verdict was computed."],
+            )
     with_dimension_values = [d["with_skill"] for d in dimensions]
     baseline_dimension_values = [d["baseline"] for d in dimensions]
     overall_ws = None
@@ -1591,7 +1643,8 @@ def _build_agent(
 
     trials = _normalize_trials(info.get("rewards") or [], with_metrics)
     baseline_trials = _normalize_trials(info.get("rewards_baseline") or [], baseline_metrics)
-    _attach_baseline_pairs(trials, baseline_trials, with_metrics, comparable_overall=comparable_scores)
+    if not never_activated:
+        _attach_baseline_pairs(trials, baseline_trials, with_metrics, comparable_overall=comparable_scores)
     from skillevaluator.tier3.harbor.resource_usage import resource_comparison
 
     resources = resource_comparison(
@@ -1610,6 +1663,8 @@ def _build_agent(
 
     return {
         "name": name,
+        "skill_activation": skill_activation,
+        "verdict": VERDICT_INCONCLUSIVE if never_activated else None,
         "model": model,
         "execution_status": (
             info.get("execution_status")
@@ -1666,6 +1721,9 @@ def _attach_agent_report_details(
         custom_lift=custom_lift if isinstance(custom_lift, dict) else {},
         report_budget=report_budget,
     )
+    if _never_activated(agent_payload):
+        for card in agent_payload["evaluator_cards"]:
+            card["lift"] = None
 
 
 def _build_evaluators(
@@ -2948,6 +3006,8 @@ def _agent_quality_verdict(agent: dict[str, Any]) -> str:
     """Classify one supported agent by the canonical dimension gate."""
     if agent.get("execution_status") != "succeeded":
         return VERDICT_NEUTRAL
+    if _never_activated(agent):
+        return VERDICT_INCONCLUSIVE
 
     dimensions = {
         str(dimension.get("id")): dimension
@@ -2979,6 +3039,8 @@ def _overall_verdict_from_agents(agents: dict[str, dict[str, Any]]) -> str:
         return VERDICT_PASS
     if any(verdict == VERDICT_NEUTRAL for verdict in verdicts) or not verdicts:
         return VERDICT_NEUTRAL
+    if all(verdict == VERDICT_INCONCLUSIVE for verdict in verdicts):
+        return VERDICT_INCONCLUSIVE
     return VERDICT_FAIL
 
 
@@ -3028,6 +3090,8 @@ def _canonical_agent_rank_from_info(
 
 def _pick_best_agent(agents: dict[str, dict[str, Any]]) -> str:
     eligible = {name: rank for name, agent in agents.items() if (rank := _canonical_agent_rank(agent)) is not None}
+    activated = {name: rank for name, rank in eligible.items() if not _never_activated(agents[name])}
+    eligible = activated or eligible
     if not eligible:
         return ""
     if len(eligible) == 1:
@@ -3190,7 +3254,9 @@ def _evaluated_at_from_run(run_dir: Path, engine_result: dict[str, Any] | None) 
 def _load_suggestions_v2(run_dir: Path, agents: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Read evidence-backed suggestions from the best agent's findings.json."""
     suggestions: list[dict[str, Any]] = []
-    for agent_name in agents:
+    for agent_name, info in agents.items():
+        if _activation_summary(info).get("status") == "never_activated":
+            continue
         findings_file = run_dir / agent_name / "findings.json"
         if not findings_file.exists():
             continue

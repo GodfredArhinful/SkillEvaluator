@@ -132,6 +132,12 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Fixed
 
+- Tier 3 reports an inconclusive result when every observed positive with-skill
+  trial has zero activation, and omits skill-lift comparisons for that agent.
+  Activation counts are reported separately; negative controls and missing
+  evidence do not imply that the skill was never loaded. The skill-execution
+  score is zero when positive activation fails, so unrelated successful checks
+  cannot inflate it to 0.5 (fixes #208).
 - Tier 3 now uses one versioned, equal-weight five-dimension overall-score
   policy across Harbor rewards, pass@k, Skill Lift, reports, comparisons, and
   best-agent selection. Previously, some paths averaged all six evaluators

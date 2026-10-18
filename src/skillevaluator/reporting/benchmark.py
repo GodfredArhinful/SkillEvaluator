@@ -1182,6 +1182,8 @@ def _tier_status(
         tier3 = assess_tier3_evidence(results, ae, expected_skill_name=expected_skill_name)
         if tier3.status == "fail":
             return "FAIL", f"{len(_agents(ae))} agent(s); {_dataset_summary(ae)['total_tasks']} task(s)"
+        if tier3.status == "inconclusive":
+            return "INCONCLUSIVE", tier3.reason or "Skill never activated."
         if not tier3.evidence_complete:
             evidence = tier3.reason or (
                 "Required Tier 3 evidence is missing"
