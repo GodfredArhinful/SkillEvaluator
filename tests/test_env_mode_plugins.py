@@ -234,7 +234,29 @@ def test_plugin_host_variables_reach_harbor_and_are_protected_from_skills(acme: 
     assert errors == ["harbor.runtime_env.ACME_SANDBOX_URL controls the host process and is not allowed"]
 
 
-@pytest.mark.parametrize("name", ["ANTHROPIC_API_KEY", "OPENAI_BASE_URL", "LD_PRELOAD", "SKILLEVALUATOR_X"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_FORCE_OAUTH",
+        "CODEX_AUTH_JSON_PATH",
+        "CODEX_FORCE_AUTH_JSON",
+        "OPENAI_BASE_URL",
+        "OPENCODE_CONFIG",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "HF_TOKEN",
+        "NVIDIA_API_KEY",
+        "DAYTONA_API_KEY",
+        "MODAL_TOKEN_SECRET",
+        "RUNTA_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "LD_PRELOAD",
+        "SKILLEVALUATOR_X",
+    ],
+)
 def test_plugins_cannot_forward_evaluator_owned_variables(
     plugin_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
@@ -271,6 +293,10 @@ def test_plugin_compose_support_gates_staged_tasks(
         ({"environment_kwargs": "endpoint"}, "environment_kwargs"),
         ({"required_environment_kwargs": ("region",)}, "must also be accepted: region"),
         ({"host_env_vars": frozenset({"BAD-NAME"})}, "host_env_vars"),
+        ({"host_env_vars": frozenset({"acme_sandbox_url"})}, "upper-case"),
+        ({"host_env_vars": frozenset({"Acme_Sandbox_Url"})}, "upper-case"),
+        ({"host_path_env_vars": frozenset({"ACME_CONFIG"})}, "host_path_env_vars must also be host_env_vars"),
+        ({"host_path_environment_kwargs": frozenset({"kubeconfig"})}, "must also be environment_kwargs"),
         ({"agent_import_paths": {"claude-code": "nope"}}, "agent_import_paths"),
     ],
 )
@@ -293,3 +319,117 @@ def test_cli_offers_installed_plugin_modes(tmp_path: Path) -> None:
     )
 
     assert result.stdout.strip() == "acme"
+
+
+def test_plugins_may_forward_kubeconfig_and_their_own_backend_settings(
+    plugin_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = frozenset({"KUBECONFIG", "ACME_SANDBOX_URL", "ACME_SANDBOX_TOKEN", "HTTPS_PROXY"})
+    plugin_module.PLUGIN = _plugin(host_env_vars=host)  # type: ignore[attr-defined]
+    _install(monkeypatch, acme=f"{_MODULE}:PLUGIN")
+
+    assert runner._env_mode_host_env_vars("acme") == host
+
+
+def test_plugin_path_settings_are_anchored_before_harbor_changes_directory(
+    plugin_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from skillevaluator.provider_config import ProviderConfig
+
+    plugin_module.PLUGIN = _plugin(  # type: ignore[attr-defined]
+        environment_kwargs=frozenset({"endpoint", "ca_file"}),
+        host_env_vars=frozenset({"ACME_CONFIG", "ACME_SANDBOX_URL"}),
+        host_path_env_vars=frozenset({"ACME_CONFIG"}),
+        host_path_environment_kwargs=frozenset({"ca_file"}),
+    )
+    _install(monkeypatch, acme=f"{_MODULE}:PLUGIN")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ACME_CONFIG", "acme/config.yaml")
+    monkeypatch.setenv("ACME_SANDBOX_URL", "https://sandbox.example")
+
+    environment = runner._harbor_subprocess_environment(
+        env_mode="acme",
+        provider=ProviderConfig(
+            provider="anthropic", model="claude", api_key="sk-ant", base_url=None, litellm_model="m", region=None
+        ),
+        configured_runtime_env={},
+        provider_env={},
+    )
+    assert environment["ACME_CONFIG"] == str(tmp_path / "acme" / "config.yaml")
+    assert environment["ACME_SANDBOX_URL"] == "https://sandbox.example"
+
+    command = build_harbor_run_command(
+        dataset_path="/tmp/dataset",
+        agent="opencode",
+        job_name="acme",
+        env_mode="acme",
+        environment_kwargs={"endpoint": "https://x", "ca_file": "certs/ca.pem"},
+    )
+    ek = [command[index + 1] for index, value in enumerate(command) if value == "--ek"]
+    assert f"ca_file={json.dumps(str(tmp_path / 'certs' / 'ca.pem'))}" in ek
+
+
+def test_install_hint_is_shown_when_the_environment_dependencies_are_missing(
+    plugin_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_import = runner.importlib.import_module
+
+    def import_module(name: str, *args: object, **kwargs: object) -> object:
+        if name == "skillevaluator_test_env_plugin_env":
+            raise ModuleNotFoundError("No module named 'acme_sdk'", name="acme_sdk")
+        return real_import(name, *args, **kwargs)
+
+    plugin_module.PLUGIN = _plugin(import_path="skillevaluator_test_env_plugin_env:AcmeEnvironment")  # type: ignore[attr-defined]
+    _install(monkeypatch, acme=f"{_MODULE}:PLUGIN")
+    monkeypatch.setattr(runner.importlib, "import_module", import_module)
+
+    [error] = runner._check_prerequisites(env_mode="acme", environment_kwargs={"endpoint": "https://up"})
+    assert "needs optional dependencies: No module named 'acme_sdk'" in error
+    assert "Install 'skillevaluator-acme'." in error
+    assert _AcmeEnvironment.preflight_calls == 0
+
+
+def test_install_hint_is_shown_when_harbor_wraps_the_import_failure(
+    acme: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _wrapped(_cls: object, _type: object, import_path: str | None = None) -> None:
+        try:
+            raise ModuleNotFoundError("No module named 'acme_sdk'")
+        except ModuleNotFoundError as exc:
+            raise ValueError(f"Failed to import module '{import_path}'") from exc
+
+    from harbor.environments.factory import EnvironmentFactory
+
+    monkeypatch.setattr(EnvironmentFactory, "run_preflight", classmethod(_wrapped))
+    [error] = runner._check_prerequisites(env_mode="acme", environment_kwargs={"endpoint": "https://up"})
+    assert "needs optional dependencies: No module named 'acme_sdk'" in error
+    assert "Install 'skillevaluator-acme'." in error
+
+
+def _write_dist(root: Path, name: str, value: str) -> None:
+    dist = root / f"{name.replace('-', '_')}-1.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+    (dist / "entry_points.txt").write_text(f"[{ENV_MODE_PLUGIN_GROUP}]\nshared = {value}\n")
+
+
+def test_a_mode_name_claimed_by_two_packages_is_ambiguous(
+    plugin_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_dist(tmp_path, "aaa-plugin", f"{_MODULE}:PLUGIN")
+    _write_dist(tmp_path, "zzz-plugin", f"{_MODULE}:make_plugin")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    tier3_environments.clear_env_mode_plugin_cache()
+
+    assert "shared" in tier3_environments.env_mode_plugin_names()
+    with pytest.raises(EnvModePluginError, match=r"registered by more than one package: aaa-plugin 1\.0, zzz-plugin 1\.0"):
+        tier3_environments.load_env_mode_plugin("shared")
+    [error] = runner._check_prerequisites(env_mode="shared")
+    assert "aaa-plugin 1.0, zzz-plugin 1.0" in error
+
+
+def test_public_benchmark_cards_do_not_name_plugin_modes(acme: types.ModuleType) -> None:
+    from skillevaluator.reporting import benchmark
+
+    assert benchmark._publication_safe_environment("acme") == "Isolated sandbox"
+    assert benchmark._publication_safe_environment("docker") == "docker"

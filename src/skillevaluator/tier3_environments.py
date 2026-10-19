@@ -246,7 +246,8 @@ DISABLE_ENV_MODE_PLUGINS_ENV = "SKILLEVALUATOR_DISABLE_ENV_MODE_PLUGINS"
 
 _PLUGIN_MODE_NAME_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 _PLUGIN_IMPORT_PATH_RE = re.compile(r"[A-Za-z_][\w.]*:[A-Za-z_]\w*")
-_PLUGIN_ENV_VAR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Upper case only: SkillEvaluator compares host variable names case-insensitively.
+_PLUGIN_ENV_VAR_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
 class EnvModePluginError(ValueError):
@@ -271,8 +272,14 @@ class EnvModePlugin:
     required_environment_kwargs: tuple[str, ...] = ()
     #: Accepted constructor kwargs that SkillEvaluator must never forward from operators.
     reserved_environment_kwargs: frozenset[str] = frozenset()
-    #: Host variables forwarded to the Harbor process; skill ``runtime_env`` cannot set them.
+    #: Upper-case host variables forwarded to the Harbor process; skill ``runtime_env``
+    #: cannot set them. Agent, provider, and other backends' credentials are refused.
     host_env_vars: frozenset[str] = frozenset()
+    #: Members of ``host_env_vars`` that hold file paths; relative values are anchored to
+    #: the caller's working directory because Harbor runs in a private directory.
+    host_path_env_vars: frozenset[str] = frozenset()
+    #: Members of ``environment_kwargs`` that hold host file paths, anchored the same way.
+    host_path_environment_kwargs: frozenset[str] = frozenset()
     #: Per-agent Harbor agent import paths; unlisted agents use Harbor's stock agent.
     agent_import_paths: Mapping[str, str] = field(default_factory=dict)
     #: Whether the backend can run tasks that declare ``docker-compose.yaml`` sidecars.
@@ -280,7 +287,7 @@ class EnvModePlugin:
     #: Optional ``package.module:function`` called as ``fn(environment_kwargs) -> list[str]``
     #: before Harbor's own ``preflight``; each string is one blocking prerequisite error.
     prerequisites: str | None = None
-    #: Shown when the plugin or its environment class cannot be imported.
+    #: Shown when the environment class or a dependency it imports cannot be imported.
     install_hint: str = ""
 
     def __post_init__(self) -> None:
@@ -300,7 +307,13 @@ class EnvModePlugin:
         if isinstance(self.host_env_vars, str) or not all(
             isinstance(name, str) and _PLUGIN_ENV_VAR_RE.fullmatch(name) for name in self.host_env_vars
         ):
-            raise EnvModePluginError("host_env_vars must be a collection of environment variable names")
+            raise EnvModePluginError("host_env_vars must be a collection of upper-case environment variable names")
+        if missing := sorted(set(self.host_path_env_vars) - set(self.host_env_vars)):
+            raise EnvModePluginError("host_path_env_vars must also be host_env_vars: " + ", ".join(missing))
+        if missing := sorted(set(self.host_path_environment_kwargs) - set(self.environment_kwargs)):
+            raise EnvModePluginError(
+                "host_path_environment_kwargs must also be environment_kwargs: " + ", ".join(missing)
+            )
         if not isinstance(self.agent_import_paths, Mapping) or not all(
             isinstance(agent, str) and isinstance(path, str) and _PLUGIN_IMPORT_PATH_RE.fullmatch(path)
             for agent, path in self.agent_import_paths.items()
@@ -310,6 +323,8 @@ class EnvModePlugin:
         object.__setattr__(self, "required_environment_kwargs", tuple(self.required_environment_kwargs))
         object.__setattr__(self, "reserved_environment_kwargs", frozenset(self.reserved_environment_kwargs))
         object.__setattr__(self, "host_env_vars", frozenset(self.host_env_vars))
+        object.__setattr__(self, "host_path_env_vars", frozenset(self.host_path_env_vars))
+        object.__setattr__(self, "host_path_environment_kwargs", frozenset(self.host_path_environment_kwargs))
         object.__setattr__(self, "agent_import_paths", MappingProxyType(dict(self.agent_import_paths)))
 
 
@@ -318,16 +333,22 @@ def _env_mode_plugins_disabled() -> bool:
 
 
 @lru_cache(maxsize=1)
-def _env_mode_plugin_entry_points() -> Mapping[str, EntryPoint]:
+def _env_mode_plugin_entry_points() -> Mapping[str, tuple[EntryPoint, ...]]:
     """Return installed plugin entry points by mode name, without importing them."""
-    selected: dict[str, EntryPoint] = {}
+    selected: dict[str, list[EntryPoint]] = {}
     for entry_point in entry_points(group=ENV_MODE_PLUGIN_GROUP):
         name = entry_point.name
         # Built-in modes keep their reviewed behavior; a plugin can never replace one.
-        if name in HARBOR_ENV_MODES or not _PLUGIN_MODE_NAME_RE.fullmatch(name) or name in selected:
+        if name in HARBOR_ENV_MODES or not _PLUGIN_MODE_NAME_RE.fullmatch(name):
             continue
-        selected[name] = entry_point
-    return MappingProxyType(dict(sorted(selected.items())))
+        if entry_point not in selected.setdefault(name, []):
+            selected[name].append(entry_point)
+    return MappingProxyType({name: tuple(points) for name, points in sorted(selected.items())})
+
+
+def _entry_point_source(entry_point: EntryPoint) -> str:
+    dist = getattr(entry_point, "dist", None)
+    return f"{dist.name} {dist.version}" if dist is not None else entry_point.value
 
 
 def env_mode_plugin_names() -> tuple[str, ...]:
@@ -356,7 +377,15 @@ def load_env_mode_plugin(env_mode: str) -> EnvModePlugin | None:
 
 @cache
 def _load_env_mode_plugin(env_mode: str) -> EnvModePlugin:
-    entry_point = _env_mode_plugin_entry_points()[env_mode]
+    claims = _env_mode_plugin_entry_points()[env_mode]
+    if len(claims) > 1:
+        # Install order would otherwise decide which backend runs.
+        raise EnvModePluginError(
+            f"Environment mode '{env_mode}' is registered by more than one package: "
+            + ", ".join(sorted(_entry_point_source(point) for point in claims))
+            + ". Uninstall all but one"
+        )
+    entry_point = claims[0]
     try:
         loaded: Any = entry_point.load()
         plugin = loaded if isinstance(loaded, EnvModePlugin) else loaded() if callable(loaded) else loaded

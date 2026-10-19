@@ -365,11 +365,18 @@ Harbor-native backends:
   `reserved_environment_kwargs`, SkillEvaluator's runtime-policy kwargs such as
   `network_policy` and `session_id`, and secret-bearing names or values are
   rejected.
-- Only the variables in `host_env_vars` reach the Harbor process, in addition
-  to the usual proxy, CA bundle, and locale variables. A skill's
-  `harbor.runtime_env` cannot set them. A plugin cannot forward agent
-  credentials, judge settings, or process-control variables; the runner
-  supplies agent credentials per agent as it does for every backend.
+- Only the upper-case variables in `host_env_vars` reach the Harbor process,
+  in addition to the usual proxy, CA bundle, and locale variables. A skill's
+  `harbor.runtime_env` cannot set them. A plugin cannot forward agent or
+  provider credentials (for example `ANTHROPIC_*`, `CLAUDE_*`, `CODEX_*`,
+  `OPENAI_*`, `OPENCODE_*`, `NVIDIA_*`, `AWS_*`, `GITHUB_*`, `GH_*`, `HF_*`),
+  another backend's credentials, judge settings, or process-control variables,
+  because Harbor's stock agents read some of them and can copy them into the
+  trial sandbox. `KUBECONFIG` is allowed. The runner supplies agent credentials
+  per agent as it does for every backend.
+- Harbor runs in a private working directory, so list host variables and `--ek`
+  kwargs that hold file paths in `host_path_env_vars` and
+  `host_path_environment_kwargs`; relative values are made absolute first.
 - `skillevaluator doctor --env-mode <mode>` checks
   `required_environment_kwargs`, then runs the optional `prerequisites`
   function (`fn(environment_kwargs) -> list[str]`), then the environment
@@ -380,9 +387,11 @@ Harbor-native backends:
   example one that uses a CLI already installed in the backend's image.
   Agents without an entry use Harbor's stock agent.
 
-A plugin cannot replace a built-in mode name. Listing the available modes
-reads package metadata only; the plugin module is imported when its mode is
-selected. Set `SKILLEVALUATOR_DISABLE_ENV_MODE_PLUGINS=1` to ignore every
+A plugin cannot replace a built-in mode name, and a name registered by more
+than one installed package is refused with both package names until all but
+one is uninstalled. Listing the available modes reads package metadata only;
+the plugin module is imported when its mode is selected. Published benchmark
+cards show a plugin backend as `Isolated sandbox` and do not name it. Set `SKILLEVALUATOR_DISABLE_ENV_MODE_PLUGINS=1` to ignore every
 installed plugin. Plugins run with your privileges, so install only plugins you
 trust.
 

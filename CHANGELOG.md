@@ -10,8 +10,10 @@ All notable changes to SkillEvaluator are documented in this file.
   through the `skillevaluator.env_modes` entry-point group, naming a Harbor
   environment class plus the `--ek` kwargs, host variables, prerequisite hook,
   and optional agent wrappers that mode accepts. Plugin modes follow the same
-  kwarg, credential, and `runtime_env` policy as Harbor-native backends, cannot
-  replace a built-in mode, and can be turned off with
+  kwarg and `runtime_env` policy as Harbor-native backends, may not forward
+  agent, provider, or other backends' credentials, cannot replace a built-in
+  mode or share a name with another installed plugin, are not named on
+  published benchmark cards, and can be turned off with
   `SKILLEVALUATOR_DISABLE_ENV_MODE_PLUGINS=1`.
 - Optional `skillevaluator dashboard` tables for comparing saved Tier 3 reports
   and retained runs across skills, models, harnesses, recorded harness

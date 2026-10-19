@@ -1185,25 +1185,67 @@ def is_operator_owned_or_provider_secret(name: str) -> bool:
     return upper.startswith(_OPERATOR_SECRET_PREFIXES)
 
 
+# Harbor's stock agents read these from the Harbor process and can copy them into
+# the trial sandbox, so a plugin may never forward them.
+_PLUGIN_REFUSED_HOST_ENV_PREFIXES = (
+    "ANTHROPIC_",
+    "CLAUDE_",
+    "CODEX_",
+    "GEMINI_",
+    "GH_",
+    "GITHUB_",
+    "GITLAB_",
+    "HF_",
+    "HUGGING_FACE_",
+    "OPENAI_",
+    "OPENCODE_",
+)
+# Shared, non-secret cluster configuration a Kubernetes-backed plugin may need.
+_PLUGIN_ALLOWED_SHARED_HOST_ENV = frozenset({"KUBECONFIG"})
+
+
+def _plugin_may_forward(name: str) -> bool:
+    upper = name.upper()
+    if upper in _HARBOR_BASE_ENV_VARS or upper in _PLUGIN_ALLOWED_SHARED_HOST_ENV:
+        return True
+    other_backend_secret = any(
+        upper in names and is_sensitive_key(upper) for names in _HARBOR_ENV_MODE_VARS.values()
+    )
+    return not (
+        upper in _OPERATOR_OWNED_AGENT_ENV
+        or upper in _RUNTIME_ENV_HOST_CONTROL_NAMES
+        or upper.startswith(_RUNTIME_ENV_HOST_CONTROL_PREFIXES)
+        or upper.startswith(_PLUGIN_REFUSED_HOST_ENV_PREFIXES)
+        or is_operator_owned_or_provider_secret(upper)
+        or other_backend_secret
+    )
+
+
 def _env_mode_plugin(env_mode: str) -> EnvModePlugin | None:
     """Load an installed ``--env-mode`` plugin and check the host variables it forwards."""
     plugin = load_env_mode_plugin(env_mode)
     if plugin is None:
         return None
-    # A plugin forwards its own backend settings only. Agent credentials, judge
-    # settings, and process-control variables stay under evaluator policy.
-    blocked = sorted(
-        name
-        for name in plugin.host_env_vars - _HARBOR_BASE_ENV_VARS
-        if name.upper() in _OPERATOR_OWNED_AGENT_ENV
-        or name.upper() in _RUNTIME_ENV_HOST_CONTROL_NAMES
-        or name.upper().startswith(_RUNTIME_ENV_HOST_CONTROL_PREFIXES)
-    )
+    # A plugin forwards its own backend settings only. Agent, provider, and other
+    # backends' credentials, judge settings, and process-control variables stay
+    # under evaluator policy.
+    blocked = sorted(name for name in plugin.host_env_vars if not _plugin_may_forward(name))
     if blocked:
         raise EnvModePluginError(
             f"Environment mode '{env_mode}' plugin may not forward evaluator-owned variable(s): {', '.join(blocked)}"
         )
     return plugin
+
+
+def _env_mode_host_path_env_vars(env_mode: str) -> frozenset[str]:
+    """Return a plugin's host variables that name files, anchored before Harbor changes directory."""
+    if env_mode in _HARBOR_ENV_MODE_VARS:
+        return frozenset()
+    try:
+        plugin = _env_mode_plugin(env_mode)
+    except EnvModePluginError:
+        return frozenset()
+    return plugin.host_path_env_vars if plugin is not None else frozenset()
 
 
 def _supported_env_modes() -> frozenset[str]:
@@ -1346,7 +1388,10 @@ def _harbor_launch_environment(env: Mapping[str, str]) -> dict[str, str]:
 def _absolute_host_path_kwargs(env_mode: str, environment_kwargs: Mapping[str, Any]) -> dict[str, Any]:
     """Anchor relative host-path constructor kwargs before Harbor changes directory."""
     anchored = dict(environment_kwargs)
-    for name in _HOST_PATH_ENVIRONMENT_KWARGS.get(env_mode, frozenset()) & anchored.keys():
+    path_kwargs = _HOST_PATH_ENVIRONMENT_KWARGS.get(env_mode, frozenset())
+    if env_mode not in _HOST_PATH_ENVIRONMENT_KWARGS and (plugin := _env_mode_plugin(env_mode)) is not None:
+        path_kwargs = plugin.host_path_environment_kwargs
+    for name in path_kwargs & anchored.keys():
         if isinstance(anchored[name], str):
             anchored[name] = _absolute_host_path(anchored[name])
     return anchored
@@ -2358,6 +2403,9 @@ def _env_mode_plugin_prerequisite_errors(
     """Run a plugin's own prerequisite hook, then its environment class's Harbor ``preflight``."""
     secret_values = secret_values_from_environment(os.environ)
     try:
+        # Import the environment module first so a missing backend SDK is reported
+        # with the plugin's install hint rather than as a generic preflight failure.
+        importlib.import_module(plugin.import_path.partition(":")[0])
         if plugin.prerequisites is not None:
             from harbor.utils.import_path import import_symbol
 
@@ -2380,6 +2428,15 @@ def _env_mode_plugin_prerequisite_errors(
         detail = redact_progress_detail(exc, secret_values=secret_values) or "preflight exited without a diagnostic"
         return [f"Environment mode '{env_mode}' is not ready: {detail}"]
     except Exception as exc:
+        if isinstance(exc.__cause__, ImportError):
+            # Harbor's import_symbol wraps import failures in ValueError.
+            detail = redact_progress_detail(
+                _harbor_missing_dependency_summary(exc.__cause__), secret_values=secret_values
+            )
+            return [
+                f"Environment mode '{env_mode}' needs optional dependencies: {detail}. "
+                f"{_environment_extra_install_hint(env_mode)}"
+            ]
         detail = redact_progress_detail(exc, secret_values=secret_values)
         return [f"Environment mode '{env_mode}' is not ready: {detail}"]
     return []
@@ -2685,6 +2742,8 @@ def _harbor_subprocess_environment(
     host_env = os.environ
     environment = _selected_host_environment(_HARBOR_BASE_ENV_VARS, host_env)
     environment.update(_selected_host_environment(_env_mode_host_env_vars(env_mode), host_env))
+    for name in _env_mode_host_path_env_vars(env_mode) & environment.keys():
+        environment[name] = _absolute_host_path(environment[name])
     if provider.provider == "bedrock":
         environment.update(_selected_host_environment(_BEDROCK_HOST_ENV_VARS, host_env))
     is_adc = (
