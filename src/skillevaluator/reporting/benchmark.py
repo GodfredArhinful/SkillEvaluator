@@ -50,7 +50,7 @@ from skillevaluator.reporting.base import (
     unrecognized_tier2_results,
 )
 from skillevaluator.source_identity import evaluated_source_revision, recorded_evaluated_source
-from skillevaluator.tier3_environments import HARBOR_ENV_MODES
+from skillevaluator.tier3_environments import is_env_mode
 
 if TYPE_CHECKING:
     from skillevaluator.models import Finding, ValidationResult
@@ -1343,7 +1343,7 @@ def _private_environment_labels(ae: dict[str, Any] | None) -> tuple[str, ...]:
         if not publication_identity_present(value):
             continue
         label = _normalized_publication_text(value)
-        if publication_identity_present(label) and label.casefold() not in HARBOR_ENV_MODES and label not in labels:
+        if publication_identity_present(label) and not is_env_mode(label.casefold()) and label not in labels:
             labels.append(label)
     return tuple(labels)
 
@@ -1549,7 +1549,7 @@ def _absolute_path_basename(value: str) -> str | None:
 
 def _publication_safe_environment(value: object) -> str:
     environment = _normalized_publication_text(value)
-    return environment if environment.casefold() in HARBOR_ENV_MODES else "Isolated sandbox"
+    return environment if is_env_mode(environment.casefold()) else "Isolated sandbox"
 
 
 def _publication_safe_location(finding: Finding) -> str:

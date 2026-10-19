@@ -1,13 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in Harbor environment names available in the public Tier 3 surface.
+"""Harbor environment names available in the public Tier 3 surface.
 
 This deliberately lives outside the Tier 3 package so that the base CLI can
 show its command help without importing Harbor or any optional dependencies.
+Installed packages may add modes through the ``skillevaluator.env_modes``
+entry-point group; listing them reads package metadata only.
 """
 
 from __future__ import annotations
+
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from functools import cache, lru_cache
+from importlib.metadata import EntryPoint, entry_points
+from types import MappingProxyType
+from typing import Any
 
 #: The exact Harbor release whose CLI, models, and environment interfaces this
 #: SkillEvaluator release targets; the ``tier3`` extra pins it.
@@ -220,3 +231,150 @@ for _alias, _harbor_type in HARBOR_ENVIRONMENT_TYPE_ALIASES.items():
 SKILLEVALUATOR_GKE_EXTRA_ENVIRONMENT_KWARGS = frozenset({"allow_workload_identity", "autopilot"})
 ENV_MODE_LOCAL = "local"
 DEFAULT_ENV_MODE = "docker"
+
+
+# ---------------------------------------------------------------------------
+# Environment-mode plugins
+# ---------------------------------------------------------------------------
+
+#: Entry-point group through which an installed package adds an ``--env-mode``.
+#: The entry-point name is the mode name; its value names an ``EnvModePlugin``
+#: instance, or a zero-argument callable that returns one.
+ENV_MODE_PLUGIN_GROUP = "skillevaluator.env_modes"
+#: Set to ``1`` to ignore every installed environment-mode plugin.
+DISABLE_ENV_MODE_PLUGINS_ENV = "SKILLEVALUATOR_DISABLE_ENV_MODE_PLUGINS"
+
+_PLUGIN_MODE_NAME_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+_PLUGIN_IMPORT_PATH_RE = re.compile(r"[A-Za-z_][\w.]*:[A-Za-z_]\w*")
+_PLUGIN_ENV_VAR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+class EnvModePluginError(ValueError):
+    """An installed environment-mode plugin could not be loaded or is malformed."""
+
+
+@dataclass(frozen=True)
+class EnvModePlugin:
+    """Describe one ``--env-mode`` that an installed package contributes.
+
+    SkillEvaluator dispatches the mode to Harbor through ``--env IMPORT_PATH``
+    and applies the same kwarg, credential, and runtime-env policy it applies to
+    Harbor-native backends. The plugin module is imported only when its mode is
+    selected, so it may import Harbor at module level.
+    """
+
+    #: Harbor ``BaseEnvironment`` subclass, as ``package.module:ClassName``.
+    import_path: str
+    #: Constructor kwargs operators may pass with ``--ek`` beyond Harbor's base kwargs.
+    environment_kwargs: frozenset[str] = frozenset()
+    #: Kwargs that must be non-empty strings before a run starts.
+    required_environment_kwargs: tuple[str, ...] = ()
+    #: Accepted constructor kwargs that SkillEvaluator must never forward from operators.
+    reserved_environment_kwargs: frozenset[str] = frozenset()
+    #: Host variables forwarded to the Harbor process; skill ``runtime_env`` cannot set them.
+    host_env_vars: frozenset[str] = frozenset()
+    #: Per-agent Harbor agent import paths; unlisted agents use Harbor's stock agent.
+    agent_import_paths: Mapping[str, str] = field(default_factory=dict)
+    #: Whether the backend can run tasks that declare ``docker-compose.yaml`` sidecars.
+    supports_docker_compose: bool = False
+    #: Optional ``package.module:function`` called as ``fn(environment_kwargs) -> list[str]``
+    #: before Harbor's own ``preflight``; each string is one blocking prerequisite error.
+    prerequisites: str | None = None
+    #: Shown when the plugin or its environment class cannot be imported.
+    install_hint: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.import_path, str) or not _PLUGIN_IMPORT_PATH_RE.fullmatch(self.import_path):
+            raise EnvModePluginError("import_path must be 'package.module:ClassName'")
+        if self.prerequisites is not None and not _PLUGIN_IMPORT_PATH_RE.fullmatch(str(self.prerequisites)):
+            raise EnvModePluginError("prerequisites must be 'package.module:function'")
+        for label, names in (
+            ("environment_kwargs", self.environment_kwargs),
+            ("required_environment_kwargs", self.required_environment_kwargs),
+            ("reserved_environment_kwargs", self.reserved_environment_kwargs),
+        ):
+            if isinstance(names, str) or not all(isinstance(name, str) and name.isidentifier() for name in names):
+                raise EnvModePluginError(f"{label} must be a collection of Python keyword names")
+        if missing := sorted(set(self.required_environment_kwargs) - set(self.environment_kwargs)):
+            raise EnvModePluginError("required_environment_kwargs must also be accepted: " + ", ".join(missing))
+        if isinstance(self.host_env_vars, str) or not all(
+            isinstance(name, str) and _PLUGIN_ENV_VAR_RE.fullmatch(name) for name in self.host_env_vars
+        ):
+            raise EnvModePluginError("host_env_vars must be a collection of environment variable names")
+        if not isinstance(self.agent_import_paths, Mapping) or not all(
+            isinstance(agent, str) and isinstance(path, str) and _PLUGIN_IMPORT_PATH_RE.fullmatch(path)
+            for agent, path in self.agent_import_paths.items()
+        ):
+            raise EnvModePluginError("agent_import_paths must map agent names to 'package.module:ClassName'")
+        object.__setattr__(self, "environment_kwargs", frozenset(self.environment_kwargs))
+        object.__setattr__(self, "required_environment_kwargs", tuple(self.required_environment_kwargs))
+        object.__setattr__(self, "reserved_environment_kwargs", frozenset(self.reserved_environment_kwargs))
+        object.__setattr__(self, "host_env_vars", frozenset(self.host_env_vars))
+        object.__setattr__(self, "agent_import_paths", MappingProxyType(dict(self.agent_import_paths)))
+
+
+def _env_mode_plugins_disabled() -> bool:
+    return os.environ.get(DISABLE_ENV_MODE_PLUGINS_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+@lru_cache(maxsize=1)
+def _env_mode_plugin_entry_points() -> Mapping[str, EntryPoint]:
+    """Return installed plugin entry points by mode name, without importing them."""
+    selected: dict[str, EntryPoint] = {}
+    for entry_point in entry_points(group=ENV_MODE_PLUGIN_GROUP):
+        name = entry_point.name
+        # Built-in modes keep their reviewed behavior; a plugin can never replace one.
+        if name in HARBOR_ENV_MODES or not _PLUGIN_MODE_NAME_RE.fullmatch(name) or name in selected:
+            continue
+        selected[name] = entry_point
+    return MappingProxyType(dict(sorted(selected.items())))
+
+
+def env_mode_plugin_names() -> tuple[str, ...]:
+    """Return the ``--env-mode`` names contributed by installed plugins."""
+    if _env_mode_plugins_disabled():
+        return ()
+    return tuple(_env_mode_plugin_entry_points())
+
+
+def all_env_modes() -> tuple[str, ...]:
+    """Return built-in modes followed by installed plugin modes."""
+    return (*HARBOR_ENVIRONMENTS, *env_mode_plugin_names())
+
+
+def is_env_mode(env_mode: str) -> bool:
+    """Return True for a built-in or installed plugin ``--env-mode``."""
+    return env_mode in HARBOR_ENV_MODES or env_mode in env_mode_plugin_names()
+
+
+def load_env_mode_plugin(env_mode: str) -> EnvModePlugin | None:
+    """Load the plugin behind ``env_mode``; return None for built-in or unknown modes."""
+    if env_mode in HARBOR_ENV_MODES or env_mode not in env_mode_plugin_names():
+        return None
+    return _load_env_mode_plugin(env_mode)
+
+
+@cache
+def _load_env_mode_plugin(env_mode: str) -> EnvModePlugin:
+    entry_point = _env_mode_plugin_entry_points()[env_mode]
+    try:
+        loaded: Any = entry_point.load()
+        plugin = loaded if isinstance(loaded, EnvModePlugin) else loaded() if callable(loaded) else loaded
+    except EnvModePluginError as exc:
+        raise EnvModePluginError(f"Environment mode '{env_mode}' plugin is invalid: {exc}") from None
+    except Exception as exc:
+        raise EnvModePluginError(
+            f"Environment mode '{env_mode}' plugin {entry_point.value!r} could not be loaded: "
+            f"{type(exc).__name__}: {exc}"
+        ) from None
+    if not isinstance(plugin, EnvModePlugin):
+        raise EnvModePluginError(
+            f"Environment mode '{env_mode}' plugin {entry_point.value!r} must provide an EnvModePlugin"
+        )
+    return plugin
+
+
+def clear_env_mode_plugin_cache() -> None:
+    """Forget discovered plugins, for tests and long-lived processes that install packages."""
+    _env_mode_plugin_entry_points.cache_clear()
+    _load_env_mode_plugin.cache_clear()
