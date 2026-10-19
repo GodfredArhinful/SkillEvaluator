@@ -523,7 +523,6 @@ def agent_eval_result_from_directory(
         env_mode=env_mode,
         runtime_seconds=_runtime_seconds(engine_result),
         harbor_viewer=_harbor_viewer_from_engine_result(engine_result),
-        suggestions_v2=_load_suggestions_v2(run_dir, agents),
         run_dir=run_dir,
         comparison=_read_comparison(run_dir),
         evaluated_at=evaluated_at or _evaluated_at_from_run(run_dir, engine_result),
@@ -745,6 +744,11 @@ def build_agent_eval_payload(
             report_budget,
         )
     best = agent_payloads.get(best_agent, {})
+    if suggestions_v2 is None and run_dir is not None:
+        # Findings are per-agent evidence. Resolve the canonical best agent
+        # before loading them, so stale advice from a different agent cannot
+        # become the run's recommendations.
+        suggestions_v2 = _load_suggestions_v2(run_dir, {best_agent: agents[best_agent]} if best_agent else {})
 
     execution_errors = list(
         dict.fromkeys(
@@ -922,7 +926,7 @@ def build_agent_eval_payload(
         "recommendations": recommendations,
         "suggestions": list(deterministic_suggestions),
         "suggestions_v2": _attach_harbor_evidence_to_suggestions_v2(
-            [] if any(_never_activated(agent) for agent in agent_payloads.values()) else (suggestions_v2 or []),
+            [] if _never_activated(best) else (suggestions_v2 or []),
             evidence_links,
         ),
         "metric_ids": metric_ids,
@@ -948,9 +952,7 @@ def build_agent_eval_payload(
         payload,
         deterministic_conclusions=deterministic_conclusions,
         deterministic_suggestions=deterministic_suggestions,
-        use_llm_judge=use_llm_judge
-        and overall_score is not None
-        and not any(_never_activated(agent) for agent in agent_payloads.values()),
+        use_llm_judge=use_llm_judge and overall_score is not None and not _never_activated(best),
     )
     if evidence_links:
         payload["conclusions"] = _attach_harbor_evidence_to_conclusions(
@@ -986,8 +988,25 @@ def _layer_llm_insights(
     try:
         from skillevaluator.evaluation.insights_judge import build_insights
 
+        # In mixed runs, keep never-activated trials available as diagnostics but
+        # exclude them from skill-quality advice and its grounding evidence.
+        eligible_agents = {
+            name: agent
+            for name, agent in (payload.get("agents") or {}).items()
+            if isinstance(agent, dict) and not _never_activated(agent)
+        }
+        insight_payload = {
+            **payload,
+            "agents": eligible_agents,
+            "agents_run": list(eligible_agents),
+            "trials": [
+                trial
+                for trial in payload.get("trials") or []
+                if isinstance(trial, dict) and trial.get("agent") in eligible_agents
+            ],
+        }
         extra = build_insights(
-            payload,
+            insight_payload,
             deterministic={
                 "conclusions": deterministic_conclusions,
                 "suggestions": deterministic_suggestions,
@@ -1122,11 +1141,7 @@ def _compact_agent_conditions(agent: dict[str, Any]) -> bool:
 
     def bounded_count(condition: dict[str, Any], key: str) -> int:
         value = condition.get(key)
-        return (
-            value
-            if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**63 - 1
-            else 0
-        )
+        return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2**63 - 1 else 0
 
     compact: dict[str, dict[str, Any]] = {}
     canonical_names = {"with_skill", "without_skill"}

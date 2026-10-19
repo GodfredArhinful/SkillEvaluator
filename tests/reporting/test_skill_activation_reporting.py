@@ -14,6 +14,7 @@ from rich.console import Console
 from skillevaluator.evaluation.tier3_report import (
     _load_suggestions_v2,
     _validation_result_from_payload,
+    agent_eval_result_from_directory,
     build_agent_eval_payload,
 )
 from skillevaluator.reporting import HTMLReporter, MarkdownReporter
@@ -105,11 +106,90 @@ def test_mixed_agents_discard_unattributed_stale_skill_advice(tmp_path) -> None:
     agent_dir = tmp_path / "unactivated"
     agent_dir.mkdir()
     (agent_dir / "findings.json").write_text(json.dumps({"suggestions_v2": stale_advice}))
-    assert _load_suggestions_v2(tmp_path, agents) == []
-    payload = build_agent_eval_payload("demo", agents, suggestions_v2=stale_advice, use_llm_judge=False)
+    suggestions = _load_suggestions_v2(tmp_path, agents)
+    assert suggestions == []
+    payload = build_agent_eval_payload("demo", agents, suggestions_v2=suggestions, use_llm_judge=False)
     assert payload is not None
     assert payload["suggestions_v2"] == []
     assert payload["verdict"] == "pass"
+
+
+@pytest.mark.parametrize("with_best_advice", [True, False])
+def test_mixed_agents_load_advice_only_from_selected_best_agent(tmp_path, with_best_advice: bool) -> None:
+    agents = {
+        "a-unactivated": _agent(score=1.0),
+        "b-activated": _agent(activated=True, score=0.7),
+        "z-best": _agent(activated=True, score=0.8),
+    }
+    for name, info in agents.items():
+        for condition, score_key, reward_key in (
+            ("with-skill", "with_skill", "rewards"),
+            ("without-skill", "without_skill", "rewards_baseline"),
+        ):
+            condition_dir = tmp_path / name / condition
+            trial_dir = condition_dir / "trials" / "case__attempt1"
+            trial_dir.mkdir(parents=True)
+            (condition_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scores": info[score_key],
+                        "execution_status": "succeeded",
+                        "num_trials": 1,
+                        "expected_attempts": 1,
+                        "scored_attempts": 1,
+                    }
+                )
+            )
+            (trial_dir / "reward.json").write_text(json.dumps(info[reward_key][0]))
+        if name != "z-best" or with_best_advice:
+            (tmp_path / name / "findings.json").write_text(
+                json.dumps({"suggestions_v2": [{"suggestion": f"Advice from {name}", "dimension": "accuracy"}]})
+            )
+
+    result = agent_eval_result_from_directory(tmp_path / "demo", tmp_path, use_llm_judge=False)
+    assert result is not None
+    payload = result.metadata["agent_eval"]
+    assert payload["best_agent"] == "z-best"
+    recommendations = [item["recommendation"] for item in payload["suggestions_v2"]]
+    assert recommendations == (["Advice from z-best"] if with_best_advice else [])
+    html = HTMLReporter(include_timestamp=False).render_all([result])
+    assert ("Advice from z-best" in html) is with_best_advice
+    assert "Advice from a-unactivated" not in html
+    assert "Advice from b-activated" not in html
+
+
+@pytest.mark.parametrize("activated", [True, False])
+def test_llm_insights_use_eligible_trials_without_hiding_diagnostics(monkeypatch, activated: bool) -> None:
+    calls = []
+    prompts = []
+
+    def build_insights(payload, **kwargs):
+        from skillevaluator.evaluation.insights_judge import InsightsJudge
+
+        calls.append(payload)
+        prompt = InsightsJudge().create_user_prompt(canonical=payload, deterministic=kwargs["deterministic"])
+        prompts.append(json.loads(prompt.split("\n\n", 1)[1]))
+        return {"conclusions": [], "recommendations": [{"message": "Advice from activated evidence."}]}
+
+    monkeypatch.setattr("skillevaluator.evaluation.insights_judge.build_insights", build_insights)
+    payload = build_agent_eval_payload(
+        "demo",
+        {"unactivated": _agent(score=1.0), "activated": _agent(activated=activated, score=0.8)},
+        use_llm_judge=True,
+    )
+    assert payload is not None
+    assert {trial["agent"] for trial in payload["trials"]} == {"activated", "unactivated"}
+    if activated:
+        assert len(calls) == 1
+        assert calls[0]["agents_run"] == ["activated"]
+        assert set(calls[0]["agents"]) == {"activated"}
+        assert {trial["agent"] for trial in calls[0]["trials"]} == {"activated"}
+        assert prompts[0]["skill"]["agents_run"] == ["activated"]
+        assert {trial["agent"] for trial in prompts[0]["trials"]} == {"activated"}
+        assert "Advice from activated evidence." in payload["suggestions"]
+    else:
+        assert calls == []
+        assert "Advice from activated evidence." not in payload["suggestions"]
 
 
 def test_missing_or_incomplete_activation_evidence_does_not_assert_never_activated() -> None:

@@ -2510,7 +2510,7 @@
                                                 <span class="t3-mad-score" style="color:{{ d_color }};">{{ "%.2f" | format(d_score) if d_score is not none else "N/A" }}</span>
                                                 {% if d_score is not none %}<div class="t3-mad-bar"><span style="width:{{ (d_score * 100) | round(0) }}%; background:{{ d_color }};"></span></div>{% endif %}
                                             </div>
-                                            <span class="t3-mad-lift" style="color:{{ lift_color }};">{% if d_lift is not none %}{{ "%+.2f" | format(d_lift) }} lift{% elif d_score is none and d.baseline is not none %}with-skill unavailable{% elif d_score is none %}N/A lift{% else %}no baseline lift{% endif %}</span>
+                                            <span class="t3-mad-lift" style="color:{{ lift_color }};">{% if _agent.get('skill_activation', {}).get('status') == 'never_activated' %}inconclusive: skill never activated{% elif d_lift is not none %}{{ "%+.2f" | format(d_lift) }} lift{% elif d_score is none and d.baseline is not none %}with-skill unavailable{% elif d_score is none %}N/A lift{% else %}no baseline lift{% endif %}</span>
                                         </div>
                                     </td>
                                 {% else %}
@@ -2533,7 +2533,7 @@
                                         <span class="t3-mad-score" style="color:{{ ws_color }};">{{ "%.2f" | format(ws) if ws is not none else "N/A" }}</span>
                                         {% if ws is not none %}<div class="t3-mad-bar"><span style="width:{{ (ws * 100) | round(0) }}%; background:{{ ws_color }};"></span></div>{% endif %}
                                     </div>
-                                    <span class="t3-mad-lift" style="color:{{ lf_color }};">{% if lf is not none %}{{ "%+.2f" | format(lf) }} lift{% elif ws is none and bl is not none %}with-skill unavailable{% elif ws is none %}N/A lift{% else %}no baseline lift{% endif %}</span>
+                                    <span class="t3-mad-lift" style="color:{{ lf_color }};">{% if agent.get('skill_activation', {}).get('status') == 'never_activated' %}inconclusive: skill never activated{% elif lf is not none %}{{ "%+.2f" | format(lf) }} lift{% elif ws is none and bl is not none %}with-skill unavailable{% elif ws is none %}N/A lift{% else %}no baseline lift{% endif %}</span>
                                 </div>
                             </td>
                         {% endfor %}
