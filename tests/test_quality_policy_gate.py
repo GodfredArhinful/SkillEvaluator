@@ -3,6 +3,7 @@
 
 """Quality thresholds remain binding when policies reclassify findings."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,9 @@ from click.testing import CliRunner
 
 from skillevaluator.cli import cli
 from skillevaluator.models.result import Finding, Severity, ValidationResult
+from skillevaluator.reporting.console_ui import first_fix, summarize_tier1
+from skillevaluator.reporting.json_reporter import JSONReporter
+from skillevaluator.utils.rich_markup import strip_terminal_controls
 from skillevaluator.validators.policy import ValidationPolicy, apply_policy
 from skillevaluator.validators.quality_score import QualityScoreValidator
 
@@ -60,8 +64,35 @@ def test_raising_efficiency_severity_keeps_cli_minimum_score_failure(
 
     assert default.exit_code == 1, default.output
     assert stricter.exit_code == 1, stricter.output
-    assert "[PASS] All validations passed" not in stricter.output
-    assert "67.8/100 is below the required 70/100" in stricter.output
+    output = strip_terminal_controls(stricter.output)
+    assert "[PASS] All validations passed" not in output
+    assert "67.8/100 is below the required 70/100" in output
+
+
+def test_pipeline_explains_minimum_score_failure(below_threshold_skill: Path) -> None:
+    result = QualityScoreValidator(min_score=70).validate(below_threshold_skill)
+    passed, rows = summarize_tier1([result])
+
+    assert not passed
+    failure_row = next(row for row in rows if row.label == "failed")
+    assert result.gate_failures[0] in "".join(text for text, _style in failure_row.segments)
+    fix = first_fix([result])
+    assert fix is not None
+    assert "67.8/100 is below the required 70/100" in fix[0][0]
+
+
+def test_json_report_includes_minimum_score_failure(below_threshold_skill: Path) -> None:
+    result = QualityScoreValidator(min_score=70).validate(below_threshold_skill)
+    data = json.loads(JSONReporter().render_all([result]))
+
+    assert data["results"][0]["gate_failures"] == result.gate_failures
+
+
+def test_json_report_omits_gate_failures_when_minimum_is_met(below_threshold_skill: Path) -> None:
+    result = QualityScoreValidator(min_score=67).validate(below_threshold_skill)
+    data = json.loads(JSONReporter().render_all([result]))
+
+    assert "gate_failures" not in data["results"][0]
 
 
 def test_quality_minimum_survives_recalculation(below_threshold_skill: Path) -> None:

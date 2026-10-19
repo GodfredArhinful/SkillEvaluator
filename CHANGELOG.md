@@ -133,7 +133,8 @@ All notable changes to SkillEvaluator are documented in this file.
 ### Fixed
 
 - Changing finding severities through a policy no longer clears an independent
-  quality-score threshold failure. A score below `--min-score` still fails.
+  quality-score threshold failure. A score below `--min-score` still fails,
+  and its reason appears in the terminal, HTML, benchmark, and JSON reports.
 - Tier 3 now uses one versioned, equal-weight five-dimension overall-score
   policy across Harbor rewards, pass@k, Skill Lift, reports, comparisons, and
   best-agent selection. Previously, some paths averaged all six evaluators
