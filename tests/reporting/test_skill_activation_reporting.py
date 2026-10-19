@@ -192,6 +192,57 @@ def test_llm_insights_use_eligible_trials_without_hiding_diagnostics(monkeypatch
         assert "Advice from activated evidence." not in payload["suggestions"]
 
 
+@pytest.mark.parametrize("best_has_trace", [True, False])
+def test_mixed_agent_advice_links_only_eligible_traces_and_keeps_full_diagnostics(monkeypatch, best_has_trace) -> None:
+    agents = {
+        "never": _agent(score=0.1),
+        "activated": _agent(activated=True, score=0.4),
+        "best": _agent(activated=True, score=0.8),
+    }
+    for name, agent in agents.items():
+        if name == "best" and not best_has_trace:
+            continue
+        agent["rewards"][0]["harbor_viewer"] = {
+            "job_url": "https://harbor.example.test/jobs/run",
+            "trial_url": f"https://harbor.example.test/jobs/run/trials/{name}",
+        }
+
+    def build_insights(_payload, **_kwargs):
+        return {
+            "conclusions": [{"title": "Eligible case evidence", "source": "llm", "evidence_case_ids": ["case"]}],
+            "recommendations": [
+                {"message": "Improve case using activated evidence.", "source": "llm", "evidence_case_ids": ["case"]}
+            ],
+        }
+
+    monkeypatch.setattr("skillevaluator.evaluation.insights_judge.build_insights", build_insights)
+    payload = build_agent_eval_payload(
+        "demo",
+        agents,
+        suggestions_v2=[{"recommendation": "Advice from best", "evidence_case_ids": ["case"]}],
+        use_llm_judge=True,
+    )
+    assert payload is not None
+    assert payload["best_agent"] == "best"
+    linked_agents = set(agents) if best_has_trace else {"never", "activated"}
+    assert {link["agent"] for link in payload["harbor_viewer"]["evidence_links"]} == linked_agents
+    for field in ("conclusions", "recommendations"):
+        llm_advice = [item for item in payload[field] if item.get("source") == "llm"]
+        assert len(llm_advice) == 1
+        assert llm_advice[0]["evidence"]["agent"] in {"activated", "best"}
+        assert "/trials/never" not in llm_advice[0]["evidence"]["url"]
+        assert all(item["evidence"]["agent"] != "never" for item in payload[field] if item.get("evidence"))
+    deterministic_advice = [item for item in payload["recommendations"] if item.get("source") == "deterministic"]
+    assert deterministic_advice
+    if best_has_trace:
+        assert payload["suggestions_v2"][0]["harbor_evidence"]["agent"] == "best"
+        assert payload["suggestions_v2"][0]["harbor_evidence"]["url"].endswith("/trials/best")
+        assert all(item["evidence"]["agent"] == "best" for item in deterministic_advice)
+    else:
+        assert "harbor_evidence" not in payload["suggestions_v2"][0]
+        assert all("evidence" not in item for item in deterministic_advice)
+
+
 def test_missing_or_incomplete_activation_evidence_does_not_assert_never_activated() -> None:
     for change in ({"rewards": []}, {"rewards_complete": False}):
         payload = build_agent_eval_payload("demo", {"opencode": {**_agent(), **change}}, use_llm_judge=False)

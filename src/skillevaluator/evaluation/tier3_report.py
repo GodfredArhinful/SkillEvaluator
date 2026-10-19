@@ -811,7 +811,12 @@ def build_agent_eval_payload(
         harbor_viewer,
     )
     best_dimensions = best.get("dimensions", [])
-    evidence_links = list(harbor_summary.get("evidence_links") or [])
+    # The full viewer summary remains diagnostic. Advice must only link to
+    # agents whose trials were eligible for its quality assessment; identical
+    # case IDs across agents do not make their traces interchangeable.
+    advice_agents = {name for name, agent in agent_payloads.items() if not _never_activated(agent)}
+    evidence_links = [link for link in harbor_summary.get("evidence_links") or [] if link.get("agent") in advice_agents]
+    best_evidence_links = [link for link in evidence_links if link.get("agent") == best_agent]
 
     summary = {
         "schema_version": _SCHEMA_VERSION,
@@ -882,7 +887,7 @@ def build_agent_eval_payload(
             }
             for text in deterministic_suggestions
         ],
-        evidence_links,
+        best_evidence_links,
     )
 
     payload = {
@@ -927,7 +932,7 @@ def build_agent_eval_payload(
         "suggestions": list(deterministic_suggestions),
         "suggestions_v2": _attach_harbor_evidence_to_suggestions_v2(
             [] if _never_activated(best) else (suggestions_v2 or []),
-            evidence_links,
+            best_evidence_links,
         ),
         "metric_ids": metric_ids,
         "supported_metric_ids": list(AGENT_EVAL_EVALUATORS),
@@ -959,13 +964,18 @@ def build_agent_eval_payload(
             payload.get("conclusions") or [],
             evidence_links,
         )
-        payload["recommendations"] = _attach_harbor_evidence_to_recommendations(
-            payload.get("recommendations") or [],
-            evidence_links,
-        )
+        linked_recommendations = []
+        for recommendation in payload.get("recommendations") or []:
+            links = (
+                best_evidence_links
+                if isinstance(recommendation, dict) and recommendation.get("source") == "deterministic"
+                else evidence_links
+            )
+            linked_recommendations.extend(_attach_harbor_evidence_to_recommendations([recommendation], links))
+        payload["recommendations"] = linked_recommendations
         payload["suggestions_v2"] = _attach_harbor_evidence_to_suggestions_v2(
             payload.get("suggestions_v2") or [],
-            evidence_links,
+            best_evidence_links,
         )
     payload = _sanitize_json_numbers(payload)
     _enforce_report_payload_budget(payload, report_budget, enforce_size=enforce_embedded_size)
