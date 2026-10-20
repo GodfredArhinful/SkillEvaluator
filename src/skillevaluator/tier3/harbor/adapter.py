@@ -27,13 +27,18 @@ import stat
 import subprocess
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
+from skillevaluator.publication_identity import (
+    publication_source_entry_is_excluded,
+    publication_source_link_is_generated,
+    publication_source_path_is_excluded,
+)
 from skillevaluator.tier3.case_ids import (
     safe_child,
     validate_case_id,
@@ -55,6 +60,10 @@ from skillevaluator.tier3.output_provenance import (
     write_generated_output_marker,
 )
 from skillevaluator.tier3.toml_utils import extract_toml_metadata_entry_id, toml_quote
+from skillevaluator.utils.path_security import (
+    find_git_repo_root,
+    resolve_repo_context_root,
+)
 from skillevaluator.utils.process_environment import child_process_env
 from skillevaluator.utils.redaction import is_sensitive_key, redact_sensitive_text
 from skillevaluator.utils.secure_fs import SecurePathError, SecureRoot
@@ -304,6 +313,7 @@ _VERIFIER_PROVIDER_ENV_VARS = frozenset(
         "BOTOCORE_TCP_KEEPALIVE",
         *_VERIFIER_BUDGET_ENV_VARS,
         *_VERIFIER_RETRY_ENV_VARS,
+        "SKILL_EVAL_LLM_CREDENTIAL_SOURCE",
     }
 )
 _RUNTIME_PROCESS_CONTROL_ENV_NAMES = frozenset(
@@ -392,40 +402,6 @@ def _verifier_env_block(runtime_env: dict[str, str] | None = None, indent: str =
     return "\n".join(f'{indent}{name} = "${{{name}}}"' for name in _verifier_env_vars(runtime_env))
 
 
-def _find_repo_root(path: Path) -> Path | None:
-    """Return the git repo root for *path*, falling back to parent .git search."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return Path(result.stdout.strip()).resolve()
-    except Exception:
-        pass
-
-    current = path.resolve()
-    if current.is_file():
-        current = current.parent
-    for parent in (current, *current.parents):
-        if (parent / ".git").exists():
-            return parent
-    return None
-
-
-def _repo_context_root(path: Path) -> Path:
-    """Return the exact source root used by repo-context staging."""
-    try:
-        repo_root = _find_repo_root(path)
-        resolved = path.resolve()
-        return repo_root or resolved.parent
-    except (OSError, RuntimeError) as exc:
-        raise ValueError(f"Cannot resolve repository context root for: {path}") from exc
-
-
 def validate_output_provenance_key_location(
     skill_path: Path,
     output_dir: Path,
@@ -437,7 +413,7 @@ def validate_output_provenance_key_location(
     protected_roots = [skill_path, output_dir, *workspace_skill_paths]
     if reference_skills_dir is not None:
         protected_roots.append(reference_skills_dir)
-    repo_root = _find_repo_root(skill_path)
+    repo_root = find_git_repo_root(skill_path)
     if repo_root is not None:
         protected_roots.append(repo_root)
     for protected_root in protected_roots:
@@ -775,6 +751,24 @@ def validate_results_root_location(
     validate_output_directory_path(results_root)
     if _path_is_excluded(skill_path, (results_root,)):
         raise ValueError(f"Generated output root must not contain the runtime skill source: {results_root}")
+    evals_dir = skill_path / "evals"
+    canonical_in_skill_root = evals_dir / "results"
+    if _path_is_excluded(results_root, (evals_dir,)) and not _path_is_canonically_contained(
+        results_root,
+        canonical_in_skill_root,
+    ):
+        raise ValueError(
+            f"Generated output root must not be inside evaluator source directory '{evals_dir}': {results_root}"
+        )
+    if _path_is_excluded(results_root, (skill_path,)) and not _path_is_canonically_contained(
+        results_root,
+        canonical_in_skill_root,
+    ):
+        canonical_label = canonical_in_skill_root.relative_to(skill_path).as_posix()
+        raise ValueError(
+            "An in-skill Tier 3 results root must be contained by the canonical "
+            f"'{canonical_label}' directory; use an external --results-dir otherwise: {results_root}"
+        )
     _validate_output_roots_outside_evaluator_sources(skill_path, (results_root,))
     runtime_sources = [*(workspace_skill_paths or [])]
     if reference_skills_dir is not None:
@@ -835,13 +829,15 @@ def _runtime_skill_copy_ignore(skill_root: Path, excluded_roots: Sequence[Path] 
 
     def _ignore(directory: str, contents: list[str]) -> list[str]:
         current = Path(directory)
-        ignored = {name for name in contents if name in {"results", "__pycache__", ".git"}}
+        ignored: set[str] = set()
         if current.resolve() == resolved_root:
             ignored.update(name for name in contents if name.casefold() == "evals")
         for name in contents:
             candidate = current / name
             if (
-                _is_skill_evals_path(candidate, skill_root)
+                publication_source_entry_is_excluded(skill_root, candidate)
+                or publication_source_link_is_generated(skill_root, candidate)
+                or _is_skill_evals_path(candidate, skill_root)
                 or _path_is_excluded(candidate, excluded_roots)
                 or _authenticated_generated_output_ancestor(
                     candidate,
@@ -886,7 +882,9 @@ def _runtime_skill_fingerprint(skill_root: Path, excluded_roots: Sequence[Path] 
             if entry.name in ignored:
                 continue
             path = Path(entry.path)
-            metadata = entry.stat(follow_symlinks=False)
+            # DirEntry.stat() exposes zero identity fields on Windows. Use a
+            # full path stat before enforcing link and hard-link policy.
+            metadata = path.lstat()
             if _path_is_link_or_reparse(path, metadata):
                 return None
             relative = path.relative_to(skill_root).as_posix().encode("utf-8")
@@ -1211,6 +1209,7 @@ def _iter_repo_context_files(
     root: Path,
     authenticated_output_roots: set[Path],
     excluded_roots: Sequence[Path] = (),
+    ignored_path_predicate: Callable[[Path], bool] | None = None,
 ) -> list[Path]:
     """Enumerate repository files without inspecting excluded output trees."""
     git_files = _git_context_files(root)
@@ -1219,6 +1218,7 @@ def _iter_repo_context_files(
             path
             for path in git_files
             if not _path_is_excluded(path, excluded_roots)
+            and not (ignored_path_predicate is not None and ignored_path_predicate(path))
             and path.is_file()
             and not _repo_context_ignore_file(path, root, authenticated_output_roots)
         )
@@ -1234,6 +1234,8 @@ def _iter_repo_context_files(
                 # descent: result trees can contain unsafe or unreadable user
                 # artifacts and are explicitly outside the staged context.
                 if _path_is_excluded(path, excluded_roots):
+                    continue
+                if ignored_path_predicate is not None and ignored_path_predicate(path):
                     continue
                 if _repo_context_ignore_file(path, root, authenticated_output_roots):
                     continue
@@ -1258,7 +1260,7 @@ def _stage_repo_context(
 
     source_skill_path = source_skill_path.resolve()
     skill_md = _skill_manifest(source_skill_path)
-    repo_root = _repo_context_root(source_skill_path)
+    repo_root = resolve_repo_context_root(source_skill_path)
     authenticated_output_roots: set[Path] = set()
     if (
         _authenticated_generated_output_ancestor(
@@ -1293,6 +1295,7 @@ def _stage_repo_context(
             repo_root,
             authenticated_output_roots,
             resolved_excluded_roots,
+            lambda path: publication_source_path_is_excluded(source_skill_path, path),
         ):
             if _is_excluded_output(src):
                 continue
@@ -1875,8 +1878,221 @@ def _write_instruction(task_dir: Path, question: str) -> None:
     (task_dir / "instruction.md").write_text(question + "\n", encoding="utf-8")
 
 
-def _load_mcp_servers(skill_path: Path) -> list[dict[str, Any]]:
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+
+class McpServerDeclaration(BaseModel):
+    """Schema for a skill-declared MCP server entry at the configuration boundary."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    transport: str | None = None
+    url: str | None = None
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    headers: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class McpSecurityPolicy(BaseModel):
+    """Host-controlled allowlists for skill-declared MCP servers."""
+
+    model_config = ConfigDict(frozen=True)
+
+    allowed_hosts: frozenset[str] = Field(default_factory=frozenset)
+    allowed_secrets: frozenset[str] = Field(default_factory=frozenset)
+
+    @classmethod
+    def from_environ(cls, environ: Mapping[str, str] | None = None) -> McpSecurityPolicy:
+        """Parse host MCP security allowlists from environment variables."""
+        env = os.environ if environ is None else environ
+        hosts = frozenset(
+            host.strip().lower() for host in env.get("SKILLEVALUATOR_ALLOWED_MCP_HOSTS", "").split(",") if host.strip()
+        )
+        secrets = frozenset(
+            secret.strip() for secret in env.get("SKILLEVALUATOR_ALLOWED_MCP_SECRETS", "").split(",") if secret.strip()
+        )
+        return cls(allowed_hosts=hosts, allowed_secrets=secrets)
+
+
+_MCP_SENSITIVE_HEADER_TOKENS = (
+    "auth",
+    "bearer",
+    "cookie",
+    "credential",
+    "key",
+    "password",
+    "secret",
+    "token",
+)
+_MCP_SENSITIVE_ENV_TOKENS = (
+    "API_KEY",
+    "AUTH_TOKEN",
+    "BEARER",
+    "COOKIE",
+    "CREDENTIAL",
+    "PASSWORD",
+    "PRIVATE_KEY",
+    "SECRET",
+    "TOKEN",
+)
+_MCP_LITERAL_SECRET_RE = re.compile(
+    r"(?i)(?:(?:^|\s)bearer\s+\S+|(?:^|\s)basic\s+\S+|\bsk-[A-Za-z0-9_-]{8,}|\bnvapi-[A-Za-z0-9_-]{8,}|"
+    r"\bAIza[0-9A-Za-z_-]{16,}|\bya29\.[0-9A-Za-z_-]{16,}|"
+    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|"
+    r"\bgh[pousr]_[A-Za-z0-9]{16,}|\bxox[baprs]-[A-Za-z0-9-]{8,})"
+)
+
+
+_MCP_COMPLETE_PLACEHOLDER_RE = re.compile(
+    r"(?<!\$)((?:\$\$)*)\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def _extract_mcp_env_refs(value: object) -> list[str]:
+    """Extract all $VAR and ${VAR} references from a string or nested structure."""
+    refs: list[str] = []
+    if isinstance(value, str):
+        for match in _COMPOSE_ENV_RE.finditer(value):
+            var_name = match.group(1) or match.group(2)
+            if var_name:
+                refs.append(var_name)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            refs.extend(_extract_mcp_env_refs(k))
+            refs.extend(_extract_mcp_env_refs(v))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            refs.extend(_extract_mcp_env_refs(item))
+    return refs
+
+
+def _strip_complete_mcp_placeholders(value: str) -> str:
+    """Return the string with complete $VAR and ${VAR} placeholders removed while preserving escaped $$."""
+    return _MCP_COMPLETE_PLACEHOLDER_RE.sub(r"\1", value).strip()
+
+
+def _contains_literal_secret(value: str) -> bool:
+    """Return True if a string contains a literal or malformed secret after stripping ${VAR}/$VAR placeholders."""
+    stripped = _strip_complete_mcp_placeholders(value)
+    if not stripped:
+        return False
+    if "${" in stripped or "$$" in value:
+        return True
+    return bool(_MCP_LITERAL_SECRET_RE.search(stripped))
+
+
+def validate_mcp_server_declarations(
+    servers: list[dict[str, Any]],
+    *,
+    allowed_runtime_env: Mapping[str, str] | None = None,
+    source_label: str = "mcp_servers.toml",
+    environ: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Validate MCP server declarations against operator secret exfiltration and unapproved auth headers."""
+    from skillevaluator.tier3.harbor.runner import is_operator_owned_or_provider_secret
+
+    policy = McpSecurityPolicy.from_environ(environ)
+    runtime_env_names = set(allowed_runtime_env.keys()) if allowed_runtime_env else set()
+
+    for raw_srv in servers:
+        try:
+            parsed = McpServerDeclaration.model_validate(raw_srv)
+        except ValidationError as exc:
+            raise ValueError(f"Invalid MCP server declaration in {source_label}: {exc}") from exc
+
+        name = parsed.name or "<unnamed>"
+        hostname = (urlsplit(parsed.url.strip()).hostname or "").lower() if parsed.url and parsed.url.strip() else ""
+        is_stdio_only = not hostname and (parsed.transport in (None, "stdio") or bool(parsed.command))
+
+        # Check all string fields (url, command, args) for literal secrets
+        for field_label, str_values in (
+            ("url", [parsed.url] if parsed.url else []),
+            ("command", [parsed.command] if parsed.command else []),
+            ("args", parsed.args),
+        ):
+            for text in str_values:
+                if _contains_literal_secret(text):
+                    raise ValueError(
+                        f"MCP server '{name}' in {source_label} declares a literal credential in '{field_label}'. "
+                        "Literal secrets in MCP configurations are prohibited."
+                    )
+
+        all_refs = _extract_mcp_env_refs(raw_srv)
+        for ref in all_refs:
+            if is_operator_owned_or_provider_secret(ref):
+                raise ValueError(
+                    f"MCP server '{name}' in {source_label} references operator-owned credential '${{{ref}}}', "
+                    "which cannot be forwarded to skill-configured MCP servers."
+                )
+            ref_upper = ref.upper()
+            is_sensitive_ref = any(token in ref_upper for token in _MCP_SENSITIVE_ENV_TOKENS)
+            allowed_via_runtime_env = is_stdio_only and not is_sensitive_ref and ref in runtime_env_names
+            if ref not in policy.allowed_secrets and not allowed_via_runtime_env:
+                raise ValueError(
+                    f"MCP server '{name}' in {source_label} references environment variable '${{{ref}}}' without "
+                    "operator approval. Set SKILLEVALUATOR_ALLOWED_MCP_SECRETS (and SKILLEVALUATOR_ALLOWED_MCP_HOSTS "
+                    "for remote servers) on the host to allow dedicated non-LLM MCP credentials."
+                )
+            if hostname and hostname not in policy.allowed_hosts:
+                raise ValueError(
+                    f"MCP server '{name}' in {source_label} sends secret '${{{ref}}}' to unapproved host '{hostname}'. "
+                    f"Add '{hostname}' to SKILLEVALUATOR_ALLOWED_MCP_HOSTS on the host to approve this MCP endpoint."
+                )
+
+        for header_name_str, header_val_str in parsed.headers.items():
+            header_lower = header_name_str.lower()
+            header_refs = _extract_mcp_env_refs(header_val_str)
+            is_sensitive_header = any(token in header_lower for token in _MCP_SENSITIVE_HEADER_TOKENS)
+            has_literal_secret = _contains_literal_secret(header_val_str)
+            header_residual = _strip_complete_mcp_placeholders(header_val_str).lower()
+            has_unapproved_sensitive_residual = is_sensitive_header and header_residual not in {"", "bearer", "basic"}
+            if has_literal_secret or has_unapproved_sensitive_residual or (is_sensitive_header and not header_refs):
+                raise ValueError(
+                    f"MCP server '{name}' in {source_label} declares literal credential or unapproved authentication "
+                    f"header '{header_name_str}'. Literal secrets in mcp_servers.toml are prohibited; use an "
+                    "operator-approved ${VAR} reference with SKILLEVALUATOR_ALLOWED_MCP_SECRETS and "
+                    "SKILLEVALUATOR_ALLOWED_MCP_HOSTS."
+                )
+            if is_sensitive_header and (not hostname or hostname not in policy.allowed_hosts):
+                raise ValueError(
+                    f"MCP server '{name}' in {source_label} declares authentication header '{header_name_str}' for "
+                    f"unapproved host '{hostname or '<missing-host>'}'. Add the host to SKILLEVALUATOR_ALLOWED_MCP_HOSTS."
+                )
+
+        for env_key_str, env_val_str in parsed.env.items():
+            cleaned_key = env_key_str.strip()
+            if is_operator_owned_or_provider_secret(cleaned_key):
+                raise ValueError(
+                    f"MCP server '{name}' in {source_label} declares operator-owned credential '{cleaned_key}' in env, "
+                    "which cannot be set or overridden by skill-configured MCP servers."
+                )
+            env_refs = _extract_mcp_env_refs(env_val_str)
+            key_upper = cleaned_key.upper()
+            is_sensitive_key = any(token in key_upper for token in _MCP_SENSITIVE_ENV_TOKENS)
+            has_literal_secret = _contains_literal_secret(env_val_str)
+            env_residual = _strip_complete_mcp_placeholders(env_val_str)
+            if has_literal_secret or (is_sensitive_key and (not env_refs or bool(env_residual))):
+                raise ValueError(
+                    f"MCP server '{name}' in {source_label} declares literal secret value for sensitive env variable "
+                    f"'{cleaned_key}'. Use an operator-approved ${{VAR}} reference with SKILLEVALUATOR_ALLOWED_MCP_SECRETS."
+                )
+
+    return servers
+
+
+def _load_mcp_servers(
+    skill_path: Path,
+    *,
+    allowed_runtime_env: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Load MCP server declarations from evals/environment/mcp_servers.toml."""
+    if allowed_runtime_env is None:
+        from skillevaluator.tier3.evals_config import load_allowed_runtime_env
+
+        allowed_runtime_env = load_allowed_runtime_env(skill_path)
+
     evals_dir = skill_path / "evals"
     environment_dir = evals_dir / "environment"
     mcp_file = environment_dir / "mcp_servers.toml"
@@ -1917,6 +2133,11 @@ def _load_mcp_servers(skill_path: Path) -> list[dict[str, Any]]:
                 s = {**s, "transport": "stdio"}
                 logger.debug("mcp_servers.toml: inferred transport=stdio for '%s'", s["name"])
             valid.append(s)
+        validate_mcp_server_declarations(
+            valid,
+            allowed_runtime_env=allowed_runtime_env,
+            source_label=str(mcp_file),
+        )
         if valid:
             logger.debug("Loaded %d MCP server(s) from %s", len(valid), mcp_file)
         return valid
@@ -1994,12 +2215,18 @@ skills_dir = "/workspace/skills"
     content += _pre_agent_setup_healthcheck_toml_block(pre_agent_setup)
 
     if mcp_servers:
+        validate_mcp_server_declarations(
+            mcp_servers,
+            allowed_runtime_env=runtime_env,
+            source_label="task.toml mcp_servers",
+        )
         for srv in mcp_servers:
             content += "\n[[environment.mcp_servers]]\n"
             for key, val in srv.items():
                 if not isinstance(key, str):
                     raise TypeError("MCP TOML keys must be strings")
                 content += f"{_toml_quote(key)} = {_toml_value(val)}\n"
+        (task_dir / "mcp_servers.json").write_text(json.dumps(mcp_servers, indent=2), encoding="utf-8")
 
     tomllib.loads(content)
     (task_dir / "task.toml").write_text(content, encoding="utf-8")
@@ -2011,13 +2238,16 @@ def _toml_quote(value: str) -> str:
 
 
 def _toml_value(value: Any) -> str:
-    """Serialize the documented MCP TOML scalar and string-list values."""
+    """Serialize the documented MCP TOML scalar, string-list, and string-dict values."""
 
     if isinstance(value, str):
         return _toml_quote(value)
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return "[" + ", ".join(_toml_quote(item) for item in value) + "]"
-    raise TypeError("MCP TOML values must be strings or lists of strings")
+    if isinstance(value, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        items = [f"{_toml_quote(k)} = {_toml_quote(v)}" for k, v in value.items()]
+        return "{" + ", ".join(items) + "}"
+    raise TypeError("MCP TOML values must be strings, lists of strings, or dictionaries of strings")
 
 
 def _runtime_env_toml_block(runtime_env: dict[str, str] | None) -> str:
@@ -5892,7 +6122,7 @@ def _generate_harbor_tasks_into(
     if not input_files_dir.exists():
         input_files_dir = None
 
-    mcp_servers = _load_mcp_servers(evaluator_skill_path)
+    mcp_servers = _load_mcp_servers(evaluator_skill_path, allowed_runtime_env=runtime_env)
     prepared_entries = _preflight_generated_tasks(entries, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     task_dirs: list[str] = []

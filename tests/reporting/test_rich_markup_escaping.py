@@ -171,7 +171,9 @@ def _agent_eval_result(payload: str) -> ValidationResult:
 def _advisory_skip_result(payload: str) -> ValidationResult:
     result = ValidationResult(validator_name="AGENT_EVAL", validator_description="Live agent evaluation")
     result.metadata["agent_eval"] = {
-        "provenance": {"advisory": True, "reason": "skipped", "message": f"Skipped because {payload}"}
+        "execution_status": "skipped",
+        "verdict": "neutral",
+        "provenance": {"advisory": True, "reason": "skipped", "message": f"Skipped because {payload}"},
     }
     return result
 
@@ -296,6 +298,7 @@ def test_cli_reporter_consoles_print_emoji_codes_literally(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("COLUMNS", "250")
+    monkeypatch.delenv("TERM", raising=False)
     results = [
         _rubric_result(EMOJI_TEXT),
         _finding_result(EMOJI_TEXT),

@@ -6,12 +6,47 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ### Added
 
+- Optional `skillevaluator dashboard` tables for comparing saved Tier 3 reports
+  and retained runs across skills, models, harnesses, recorded harness
+  features, and skill conditions. Paired with/without differences cover score,
+  pass@k, tokens, and agent execution time, plus USD cost when retained runs
+  record it; the performance table also shows per-trial means alongside
+  totals. Comparisons require matching complete trial coverage (repeated
+  attempts pair by case, as in the HTML report) and name the reason when a
+  pair is not comparable. Inputs are read once and reused between
+  interactions (**Reload reports** re-reads them); browser uploads are limited
+  to 16 MB. Install it with the `dashboard` extra.
+- Tier 3 support for Harbor GKE execution mode (`--env-mode gke`) and `--ek`
+  argument forwarding. API keys, bearer tokens, and passwords passed in `--ek`
+  keys or values are rejected to keep credentials out of process listings, while
+  configuration such as rate limits and token counts is preserved. Cluster
+  infrastructure settings in skill configs are rejected to enforce security
+  boundaries in favor of host environment variables and CLI flags.
+- Claude Code live agent routing for Google Cloud Vertex AI
+  (`CLAUDE_CODE_USE_VERTEX=1`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`),
+  with redirect-blocking preflight probes, case-insensitive model alias
+  resolution, and explicit trusted-skill opt-in (`SKILLEVALUATOR_GKE_ALLOW_WORKLOAD_IDENTITY=1`
+  or `--ek allow_workload_identity=true`) when using single-pod GKE Workload Identity.
+- Fail-closed validation for skill-authored MCP server configurations
+  (`evals/environment/mcp_servers.toml` and `mcp_servers.json`) that blocks
+  operator/provider credential references and literal secrets, while allowing
+  operator-approved MCP endpoints and non-LLM secrets via
+  `SKILLEVALUATOR_ALLOWED_MCP_HOSTS` and `SKILLEVALUATOR_ALLOWED_MCP_SECRETS`.
 - The HTML report's Tier 1 card now shows the SkillSpector version that ran
   the security scan (for example `SkillSpector v2.12.0`), and the embedded
   report JSON records it as `skillspector_versions`. Findings depend on the
   scanner release, so reviewers can tell which SkillSpector produced them
   without rerunning the scan. The version is shown even when the report omits
   its timestamp.
+- `--env-mode kata` runs Tier 3 trials through the hardened Docker backend with
+  every task service in a Kata Containers microVM. It requires a Linux host with
+  `/dev/kvm` and a Kata runtime registered with Docker, and accepts only the
+  `kata_runtime` and `kata_dns` environment kwargs. Image builds still run on
+  the host, and tasks with Compose sidecars are rejected.
+- `--env-mode runta` and `--env-mode mosaic` run Tier 3 trials on Harbor's Runta
+  and Mosaic backends. Runta's `mode` and Mosaic's `volume`, `persist`,
+  `enable_ssh`, `build_args`, and `build_target` kwargs are reserved because they
+  bypass the task image or let state and access outlive one isolated trial.
 
 ### Changed
 
@@ -82,9 +117,76 @@ All notable changes to SkillEvaluator are documented in this file.
   only for the Codex process. Skills whose scripts, tasks, or stdio MCP servers
   need these tools must install them through `scripts/apt-packages.txt` or a
   custom `evals/environment/Dockerfile`.
+- Exposed `kata`, `runta`, and `mosaic` as the 24th, 25th, and 26th Harbor 0.24
+  backends alongside local mode. `cua-cloud`, `opensandbox`, `hf-sandbox`,
+  `podman`, `prime`, and `smol` remain disabled.
+- The public benchmark gate (`scripts/ci/check_public_benchmarks.py`) now
+  requires a `PASS` card to record its `Source digest` and `Tier 3 run ID`.
+  `PASS` cards rendered by earlier releases fail the scan until they are
+  regenerated; earlier `FAIL`, `NEUTRAL`, and `INCOMPLETE` cards without those
+  lines are still accepted, and the lines are validated whenever present.
+- Report output must be outside the publication target. An explicit
+  `--output-dir` inside the evaluated skill is now rejected; use an external
+  directory. A default in-target `reports/` location relocates to an
+  authenticated sibling `<skill>-reports` (or `<catalog>-reports`), refuses
+  unowned collisions, and is excluded from Tier 3 runtime staging. Report roots
+  inside the target repository or an included-skill root are excluded from
+  linked or full-repository context only after they are reserved or
+  authenticated as generated output, so an authored subtree is never silently
+  omitted.
+- A custom Tier 3 `--results-dir` inside the evaluated skill is now rejected;
+  use the canonical `evals/results` path or an external results root.
+- `validate --block-on-agent-eval` now passes the exit gate only for a completed
+  Tier 3 `PASS` verdict with complete attempt coverage. `NEUTRAL` and `FAIL`
+  verdicts exit 1; previously any completed, scored run passed.
 
 ### Fixed
 
+- Tier 3 reports an inconclusive result when every observed positive with-skill
+  trial has zero activation, and omits skill-lift comparisons for that agent.
+  Activation counts are reported separately; negative controls and missing
+  evidence do not imply that the skill was never loaded. The skill-execution
+  score is zero when positive activation fails, so unrelated successful checks
+  cannot inflate it to 0.5 (fixes #208). Benchmark cards and dashboard comparisons
+  preserve this eligibility rule, and multi-agent HTML labels explain why lift
+  is unavailable. Mixed-agent reports retain advice from the best eligible
+  agent without attributing never-activated trials to skill quality.
+- Tier 3 now uses one versioned, equal-weight five-dimension overall-score
+  policy across Harbor rewards, pass@k, Skill Lift, reports, comparisons, and
+  best-agent selection. Previously, some paths averaged all six evaluators
+  directly while reports averaged five dimensions, which gave Effectiveness
+  two votes and could reverse the reported lift direction. Current artifacts
+  persist `skill-evaluator-dimension-mean-v1`; legacy and partial artifacts
+  retain their historical semantics. Conditions keep their own recorded metric
+  sets; overall lift and best-agent rankings are omitted across different
+  standard metric sets while individual scores are preserved, and
+  `tier3 compare` refuses standard agents with different policies or metric
+  sets. Custom-only agents keep their grader's own overall and are ranked and
+  compared against standard agents
+  (Relates to [#61](https://github.com/NVIDIA/SkillEvaluator/issues/61)).
+- Preserve explicit Claude and OpenCode read failure metadata in reconstructed
+  ATIF trajectories. Failed isolated SKILL.md reads and failed native Skill
+  calls lose credit; compound shell failures and shell reads whose path may
+  expand to several files (braces, globs, `$` or backticks) remain ambiguous
+  and retain prior credit in host and verifier grading. Unattributed errors do
+  not cancel successful reads, and shell reads count dash-prefixed filenames
+  after `--`.
+- Tier 1 pyproject dependency audits now inspect static target declarations
+  rather than the evaluator environment. Exact direct pins (including optional
+  groups) are queried without installation or build-script execution;
+  unresolved declarations and invalid scanner evidence are incomplete.
+- Tier 1 PII scanning now includes `.mdc` rules and workflows.
+- Tier 3 negative-case accuracy excludes inapplicable skill identification and
+  records its scoring policy. Reports separately expose measured token and
+  agent execution-time differences with complete matching-arm coverage, while
+  efficiency continues to measure routing and productive tool use.
+- Derive accuracy scores from complete criterion verdicts in both judge
+  runtimes (passing applicable criteria divided by applicable criteria), so an
+  inconsistent model-supplied total cannot distort Skill Lift. Correct the
+  Harbor prompt example to score five passing criteria as 1.0.
+- Include schema-valid ATIF message content parts in final answers, conversation
+  summaries, and judge evidence references in the host and Harbor verifier.
+  Image and audio parts use markers without exposing their source paths.
 - Preserve scored Harbor trials when agent answers mention authentication errors
   and per-step token usage is present but aggregate ATIF token metrics are absent
   or zero. Explicit runtime exceptions and error events still invalidate trials.
@@ -113,6 +215,41 @@ All notable changes to SkillEvaluator are documented in this file.
   budget and judge time-budget variables, and the Harbor process environment.
   The CLI reference adds `validate --workers`, the full `--env-mode` list, and
   the exit codes the CLI actually returns (`0`, `1`, `2`).
+- `BENCHMARK.md` publication verdicts now require completed Tier 1 and Tier 2
+  execution evidence by default (Tier 1 must cover every default check that
+  applies to the content type, so a run narrowed with `--checks` cannot
+  certify publication), conservatively resolve conflicting peer
+  policy and Tier 3 result metadata, bind every tier and policy claim to one
+  versioned source-tree digest, preserve the Tier 3 run ID, persist an explicit
+  publication status in JSON and HTML, and reject
+  publication `PASS` cards whose decision evidence is missing, incomplete,
+  linked, or hidden in raw HTML. Tier 3 evidence now cross-checks complete
+  per-condition attempt and error records, and the public-card gate rejects
+  ambiguous structural headings, browser-rendered decision-text aliases, and
+  literal or entity-encoded Unicode control/format characters. The source
+  identity is read without following links before and after each producer,
+  follows the host filesystem's case aliases, and records a bounded
+  source-change marker. Tier 3 runs that stage repository context, external
+  reference or workspace skills, or task inputs with `.git`, `.venv`,
+  `__pycache__`, or `node_modules` entries remain runnable but cannot certify
+  publication, and neither can a target whose authored paths below the root
+  use names that Tier 1 skips (such as `references/results/`).
+- Clean and not-applicable License, Code Risk, Secrets, and Dependency Audit
+  runs now record structured execution evidence, so legitimate built-in Tier 1
+  results can satisfy publication without relying on findings or errors.
+- Skip reasons are bounded, control-free, and escaped in reports and in the
+  terminal, so oversized metadata, Rich markup, or terminal escape sequences
+  cannot corrupt them. Reports show one line; the pipeline view keeps the
+  reason's line breaks.
+- SkillSpector issue paths with NUL bytes or lone surrogates now make the
+  security scan incomplete instead of being accepted.
+- The public benchmark gate rejects `PASS` cards with placeholder identities,
+  malformed or future evaluation dates, a missing Tier 3 run ID, hostile
+  benchmark-policy metadata, or environment-label substitutions in required
+  proof fields.
+- Hardened Tier 3 HTML and Markdown reporting against recursive or malformed
+  display metadata, Markdown structure injection, and inline-JavaScript
+  injection through untrusted agent or skill names.
 
 ## 0.5.0 - 2026-10-06
 

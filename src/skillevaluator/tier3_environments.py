@@ -15,6 +15,7 @@ HARBOR_VERSION = "0.24.0"
 
 HARBOR_ENVIRONMENTS = (
     "docker",
+    "kata",
     "daytona",
     "e2b",
     "modal",
@@ -37,6 +38,8 @@ HARBOR_ENVIRONMENTS = (
     "skypilot",
     "hyperbrowser",
     "vercel",
+    "runta",
+    "mosaic",
     # Not a Harbor-native backend: SkillEvaluator's host execution mode, run
     # under an OS sandbox (bubblewrap on Linux, Seatbelt on macOS). Dispatched
     # by passing its custom import path through Harbor's unified --env flag.
@@ -45,6 +48,9 @@ HARBOR_ENVIRONMENTS = (
 HARBOR_ENV_MODES = frozenset(HARBOR_ENVIRONMENTS)
 #: Public env modes that Harbor accepts natively via ``--env`` (everything except ``local``).
 HARBOR_NATIVE_ENV_MODES = frozenset(m for m in HARBOR_ENVIRONMENTS if m != "local")
+#: Modes that run through SkillEvaluator's hardened Docker Compose backend on the
+#: host's Docker engine. ``kata`` adds Harbor's Kata Containers runtime overlay.
+HARBOR_DOCKER_ENGINE_ENV_MODES = frozenset({"docker", "kata"})
 #: SkillEvaluator modes that run as a different Harbor environment type. Harbor
 #: 0.24 merged its W&B sandbox into ``cwsandbox``, selected with ``auth=wandb``.
 HARBOR_ENVIRONMENT_TYPE_ALIASES: dict[str, str] = {"wandb": "cwsandbox"}
@@ -59,10 +65,11 @@ def harbor_environment_type(env_mode: str) -> str:
 
 # Exact Harbor ``Provides-Extra`` names. ``ack`` reuses the Kubernetes
 # dependencies supplied by ``gke``, and ``wandb`` the W&B-capable ``cwsandbox``
-# extra. Of the four ``None`` entries, Docker needs no additional Python extra
-# and the other three are system-CLI backends.
+# extra. Of the five ``None`` entries, Docker and Kata need no additional Python
+# extra and the other three are system-CLI backends.
 HARBOR_ENVIRONMENT_EXTRAS: dict[str, str | None] = {
     "docker": None,
+    "kata": None,
     "daytona": "daytona",
     "e2b": "e2b",
     "modal": "modal",
@@ -85,14 +92,16 @@ HARBOR_ENVIRONMENT_EXTRAS: dict[str, str | None] = {
     "skypilot": "skypilot",
     "hyperbrowser": "hyperbrowser",
     "vercel": "vercel",
+    "runta": "runta",
+    "mosaic": "mosaic",
 }
 
 # Constructor kwargs consumed by the pinned Harbor release. Keep this static so
 # importing the base SkillEvaluator CLI never imports Harbor or optional provider
 # SDKs. The packaging parity test AST-reads the pinned Harbor sources and catches
 # additions, removals, and provider kwargs that are consumed through **kwargs.
-# Registry-only entries (cua-cloud, opensandbox, hf-sandbox, podman, kata, runta,
-# prime, mosaic, smol) keep that parity exact; those modes are not exposed.
+# Registry-only entries (cua-cloud, opensandbox, hf-sandbox, podman, prime, smol)
+# keep that parity exact; those modes are not exposed.
 _HARBOR_BASE_ENVIRONMENT_KWARGS = frozenset(
     {
         "cpu_enforcement_policy",
@@ -206,5 +215,8 @@ for _alias, _harbor_type in HARBOR_ENVIRONMENT_TYPE_ALIASES.items():
     HARBOR_ENVIRONMENT_KWARGS[_alias] = (
         HARBOR_ENVIRONMENT_KWARGS[_harbor_type] - HARBOR_ENVIRONMENT_ALIAS_KWARGS[_alias].keys()
     )
+# SkillEvaluatorGKEEnvironment wrapper kwargs accepted on ``--env-mode gke`` in
+# addition to stock Harbor's GKEEnvironment.__init__ parameters.
+SKILLEVALUATOR_GKE_EXTRA_ENVIRONMENT_KWARGS = frozenset({"allow_workload_identity", "autopilot"})
 ENV_MODE_LOCAL = "local"
 DEFAULT_ENV_MODE = "docker"

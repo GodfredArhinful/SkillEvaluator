@@ -3396,6 +3396,44 @@ Call us at 555-123-4567 or +1-555-987-6543
         assert any("location.file" in error for error in result.errors)
 
     @pytest.mark.parametrize(
+        "file_path",
+        [
+            "bad\x00/BENCHMARK.md",
+            "bad\ud800/BENCHMARK.md",
+            "bad\nforged.py",
+            "bad\x1b[31m.py",
+        ],
+        ids=["embedded-nul", "lone-surrogate", "newline", "terminal-escape"],
+    )
+    @patch("skillevaluator.validators.security.Tools")
+    def test_skillspector_report_rejects_non_filesystem_safe_issue_path(
+        self,
+        mock_tools,
+        sample_skill_dir: Path,
+        file_path: str,
+    ) -> None:
+        payload = _skillspector_json_report(
+            [
+                {
+                    "id": "M1",
+                    "severity": "MEDIUM",
+                    "finding": "advisory",
+                    "location": {"file": file_path, "start_line": 1},
+                }
+            ]
+        )
+        payload["risk_assessment"] = {
+            "score": 10,
+            "severity": "LOW",
+            "recommendation": "SAFE",
+        }
+
+        result = _validate_skillspector_payload(mock_tools, sample_skill_dir, payload)
+
+        assert result.status == "incomplete"
+        assert any("location.file" in error and "filesystem-safe" in error for error in result.errors)
+
+    @pytest.mark.parametrize(
         ("skillspector_version", "case"),
         [
             pytest.param("2.9.6", "not-applicable", id="2.9.6-not-applicable"),
@@ -3996,6 +4034,48 @@ Call us at 555-123-4567 or +1-555-987-6543
         assert child_env["OPENAI_BASE_URL"] == "https://resolved.example.test/v1"
         assert os.environ["OPENAI_API_KEY"] == "ambient-openai-key"
         assert os.environ["OPENAI_BASE_URL"] == "https://ambient.example.test/v1"
+
+    @pytest.mark.parametrize("provider_name", ["openai", "openai-compatible"])
+    def test_skillspector_child_environment_maps_vertex_openapi_adc(
+        self,
+        monkeypatch,
+        provider_name: str,
+    ) -> None:
+        """Verify SkillSpector child receives OPENAI_API_KEY with ADC under both provider aliases."""
+        monkeypatch.setattr("skillevaluator.provider_config._get_google_access_token", lambda **_kw: "mock-adc-token")
+        base_url = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+        monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", provider_name)
+        if provider_name == "openai":
+            monkeypatch.setenv("OPENAI_BASE_URL", base_url)
+        else:
+            monkeypatch.setenv("SKILL_EVAL_LLM_BASE_URL", base_url)
+        monkeypatch.setenv("SKILL_EVAL_LLM_MODEL", "google/gemini-3.8-flash")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("SKILL_EVAL_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("SKILLSPECTOR_PROVIDER", raising=False)
+
+        child_env = _skillspector_child_env()
+
+        assert child_env is not None
+        assert child_env["SKILLSPECTOR_PROVIDER"] == "openai"
+        assert child_env["SKILLSPECTOR_MODEL"] == "google/gemini-3.8-flash"
+        assert child_env["OPENAI_API_KEY"] == "mock-adc-token"
+        assert child_env["OPENAI_BASE_URL"] == base_url
+
+    def test_skillspector_child_environment_maps_generic_openai_key(self, monkeypatch) -> None:
+        """Verify SKILL_EVAL_LLM_PROVIDER=openai with generic key forwards OPENAI_API_KEY."""
+        monkeypatch.setenv("SKILL_EVAL_LLM_PROVIDER", "openai")
+        monkeypatch.setenv("SKILL_EVAL_LLM_API_KEY", "generic-openai-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("SKILLSPECTOR_PROVIDER", raising=False)
+
+        child_env = _skillspector_child_env()
+
+        assert child_env is not None
+        assert child_env["SKILLSPECTOR_PROVIDER"] == "openai"
+        assert child_env["OPENAI_API_KEY"] == "generic-openai-key"
+        assert child_env["SKILL_EVAL_LLM_API_KEY"] == "generic-openai-key"
 
     @pytest.mark.parametrize(
         ("provider", "credentials", "expected"),

@@ -20,6 +20,7 @@ from skillevaluator.evaluation.tier3_report import (
     _metric_evidence,
     _normalize_trials,
     _raw_trial_rewards,
+    _replace_with_minimal_payload,
     _ReportBudget,
     agent_eval_result_from_directory,
     build_agent_eval_payload,
@@ -28,9 +29,17 @@ from skillevaluator.evaluation.tier3_report import (
 from skillevaluator.models import ValidationResult
 from skillevaluator.reporting import HTMLReporter, JSONReporter
 from skillevaluator.reporting import html as html_module
+from skillevaluator.reporting.base import agent_eval_publication_evidence_complete
 from skillevaluator.reporting.html import PackageLoader, _compact_json
 from skillevaluator.tier3.harbor.collector import _paired_pass_comparison, _wilson_score_interval
-from skillevaluator.tier3.harbor.metrics import DEFAULT_METRICS, MAX_CUSTOM_METRIC_NAME_BYTES
+from skillevaluator.tier3.harbor.metrics import (
+    DEFAULT_METRICS,
+    DEFAULT_SCORE_POLICY,
+    LEGACY_METRICS,
+    LEGACY_SCORE_POLICY,
+    MAX_CUSTOM_METRIC_NAME_BYTES,
+    PARTIAL_SCORE_POLICY,
+)
 from skillevaluator.tier3.harbor.report import _extract_findings
 from skillevaluator.tier3.harbor.report_data import build_dataset_snapshot, metrics_for_agents
 
@@ -539,6 +548,34 @@ def test_standalone_tier3_uses_generic_tier3_only_report(tmp_path: Path) -> None
     assert "SkillEvaluator" in html
 
 
+def test_standalone_tier3_binds_report_to_requested_skill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from skillevaluator import reporting as reporting_module
+
+    captured: dict[str, object] = {}
+
+    class CapturingHTMLReporter:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def save(self, results: list[ValidationResult], target: Path) -> None:
+            captured["results"] = results
+            target.write_text("<html>captured</html>", encoding="utf-8")
+
+    skill = tmp_path / "requested-skill"
+    skill.mkdir()
+    run_dir = tmp_path / "results" / "20260709_120000"
+    _write_summary(run_dir)
+    monkeypatch.setattr(reporting_module, "HTMLReporter", CapturingHTMLReporter)
+
+    report = render_agent_eval_html_report(skill, run_dir, use_llm_judge=False)
+
+    assert report.read_text(encoding="utf-8") == "<html>captured</html>"
+    assert captured["expected_skill_name"] == "requested-skill"
+
+
 def test_trial_report_renders_unavailable_tokens_as_unavailable() -> None:
     payload = build_agent_eval_payload(
         "demo",
@@ -767,7 +804,463 @@ def test_authenticated_pre_status_rerender_preserves_historical_scores(tmp_path:
     payload = tier3.metadata["agent_eval"]
     assert payload["execution_status"] == "succeeded"
     assert payload["overall_score"] is not None
+    assert payload["score_policy"] == PARTIAL_SCORE_POLICY
     assert payload["agents"]["opencode"]["evaluators"]["security"]["with_skill"] == 0.8
+
+
+@pytest.mark.parametrize(
+    ("stored_overall", "recorded_policy", "expected_policy", "expected_score"),
+    [
+        pytest.param(0.5583, None, LEGACY_SCORE_POLICY, 0.5583, id="stored-historical-overall"),
+        pytest.param(None, None, LEGACY_SCORE_POLICY, 0.5583, id="recomputed-historical-overall"),
+        pytest.param(2.0, None, LEGACY_SCORE_POLICY, 0.5583, id="out-of-range-overall"),
+        pytest.param(10**4000, None, LEGACY_SCORE_POLICY, 0.5583, id="overflowing-overall"),
+        pytest.param(None, DEFAULT_SCORE_POLICY, DEFAULT_SCORE_POLICY, 0.49, id="current-policy"),
+        pytest.param(0.5583, "future-weighted-policy-v2", "future-weighted-policy-v2", 0.5583, id="future-policy"),
+    ],
+)
+@pytest.mark.parametrize(
+    "evaluated_source",
+    [None, {"repository": "NVIDIA/SkillEvaluator", "commit": "a" * 40}],
+    ids=["without-source", "with-source"],
+)
+def test_default_v2_rerender_respects_recorded_or_historical_policy(
+    tmp_path: Path,
+    stored_overall: object,
+    recorded_policy: str | None,
+    expected_policy: str,
+    expected_score: float,
+    evaluated_source: dict[str, str] | None,
+) -> None:
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    run_dir = tmp_path / "results" / "20260709_120009"
+    summary = run_dir / "opencode" / "with-skill" / "summary.json"
+    summary.parent.mkdir(parents=True)
+    scores = {
+        "security": 0.3875,
+        "skill_execution": 0.3875,
+        "skill_efficiency": 0.3875,
+        "accuracy": 0.3875,
+        "goal_accuracy": 0.9,
+        "behavior_check": 0.9,
+    }
+    summary_payload = {
+        "execution_status": "succeeded",
+        "execution_errors": [],
+        "expected_attempts": 1,
+        "scored_attempts": 1,
+        "scores": scores,
+        "metric_set": "skill-evaluator-default-v2",
+        "metrics": list(DEFAULT_METRICS),
+        "num_trials": 0,
+    }
+    if stored_overall is not None:
+        summary_payload["overall_score"] = stored_overall
+    if recorded_policy is not None:
+        summary_payload["score_policy"] = recorded_policy
+    summary.write_text(json.dumps(summary_payload), encoding="utf-8")
+    if evaluated_source is not None:
+        (run_dir / "run_config.json").write_text(json.dumps({"evaluated_source": evaluated_source}), encoding="utf-8")
+    if recorded_policy is None:
+        comparison_summary = run_dir / "codex" / "with-skill" / "summary.json"
+        comparison_summary.parent.mkdir(parents=True)
+        comparison_summary.write_text(
+            json.dumps(
+                {
+                    **summary_payload,
+                    "scores": dict.fromkeys(DEFAULT_METRICS, 0.55),
+                    "overall_score": 0.55,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "attempt_policy.json").write_text(
+            json.dumps(
+                {
+                    "max_attempts": 1,
+                    "pass_threshold": 0.5,
+                    "stop_on_pass": False,
+                    "score_definition": "overall = mean(security, skill_execution, skill_efficiency, accuracy, goal_accuracy, behavior_check)",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    tier3 = agent_eval_result_from_directory(skill, run_dir, use_llm_judge=False)
+
+    assert tier3 is not None
+    payload = tier3.metadata["agent_eval"]
+    assert payload["overall_score"] == pytest.approx(expected_score)
+    assert payload["agents"]["opencode"]["with_skill"] == pytest.approx(expected_score)
+    assert payload["score_policy"] == expected_policy
+    assert payload["summary"]["score_policy"] == expected_policy
+    assert payload["evaluated_source"] == evaluated_source
+    assert payload["summary"]["evaluated_source"] == evaluated_source
+    assert payload["attempt_policy"]["score_policy"] == expected_policy
+    if expected_policy == LEGACY_SCORE_POLICY:
+        assert payload["best_agent"] == "opencode"
+    definition = payload["attempt_policy"]["score_definition"]
+    if expected_policy == LEGACY_SCORE_POLICY:
+        assert definition.startswith("overall = mean(security,")
+    elif expected_policy == "future-weighted-policy-v2":
+        assert "future-weighted-policy-v2" in definition
+        assert DEFAULT_SCORE_POLICY not in definition
+    else:
+        assert "mean(Security, Correctness, Discoverability, Effectiveness, Efficiency)" in definition
+
+
+def test_canonical_report_fails_closed_on_mixed_recorded_score_policies() -> None:
+    scores = dict.fromkeys(DEFAULT_METRICS, 0.5)
+    payload = build_agent_eval_payload(
+        "mixed-policy-demo",
+        {
+            "codex": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 1,
+                "scored_attempts": 1,
+                "with_skill": scores,
+                "overall_with_skill": 0.5,
+                "score_policy_with_skill": DEFAULT_SCORE_POLICY,
+            },
+            "opencode": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 1,
+                "scored_attempts": 1,
+                "with_skill": scores,
+                "overall_with_skill": 0.5,
+                "score_policy_with_skill": LEGACY_SCORE_POLICY,
+            },
+        },
+        use_llm_judge=False,
+    )
+
+    assert payload is not None
+    assert payload["execution_status"] == "failed"
+    assert payload["overall_score"] is None
+    assert payload["best_agent"] == ""
+    assert any("conflicting score policies" in error.lower() for error in payload["execution_errors"])
+
+
+def test_canonical_report_fails_closed_on_different_condition_policies() -> None:
+    payload = build_agent_eval_payload(
+        "mixed-condition-demo",
+        {
+            "opencode": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 2,
+                "scored_attempts": 2,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.5),
+                "without_skill": dict.fromkeys(DEFAULT_METRICS, 0.2),
+                "overall_with_skill": 0.5,
+                "overall_without_skill": 0.2,
+                "score_policy_with_skill": DEFAULT_SCORE_POLICY,
+                "score_policy_without_skill": LEGACY_SCORE_POLICY,
+            }
+        },
+        attempt_policy={"score_policy": DEFAULT_SCORE_POLICY},
+        use_llm_judge=False,
+    )
+
+    assert payload is not None
+    assert payload["execution_status"] == "failed"
+    assert payload["overall_score"] is None
+    assert payload["overall_lift"] is None
+    assert payload["agents"]["opencode"]["lift"] is None
+    assert any("conflicting score policies" in error.lower() for error in payload["execution_errors"])
+
+
+def test_current_policy_overall_uses_raw_evaluators_not_cached_dimensions() -> None:
+    payload = build_agent_eval_payload(
+        "stale-dimensions-demo",
+        {
+            "opencode": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 1,
+                "scored_attempts": 1,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.5),
+                "dimensions_with_skill": {
+                    dimension: {"score": 1.0}
+                    for dimension in ("security", "correctness", "discoverability", "effectiveness", "efficiency")
+                },
+                "score_policy_with_skill": DEFAULT_SCORE_POLICY,
+            }
+        },
+        use_llm_judge=False,
+    )
+
+    assert payload is not None
+    assert payload["overall_score"] == 0.5
+    assert payload["agents"]["opencode"]["with_skill"] == 0.5
+
+
+def test_known_legacy_policy_overall_uses_raw_metrics_when_stored_value_disagrees() -> None:
+    payload = build_agent_eval_payload(
+        "legacy-integrity-demo",
+        {
+            "opencode": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 1,
+                "scored_attempts": 1,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.2),
+                "overall_with_skill": 0.9,
+                "score_policy_with_skill": LEGACY_SCORE_POLICY,
+            }
+        },
+        use_llm_judge=False,
+    )
+
+    assert payload is not None
+    assert payload["score_policy"] == LEGACY_SCORE_POLICY
+    assert payload["overall_score"] == 0.2
+
+
+def test_known_legacy_policy_lift_uses_condition_scores_not_stale_lift_artifact() -> None:
+    payload = build_agent_eval_payload(
+        "legacy-lift-integrity-demo",
+        {
+            "opencode": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 1,
+                "scored_attempts": 1,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.6),
+                "without_skill": dict.fromkeys(DEFAULT_METRICS, 0.4),
+                "lift": {"overall": {"delta": -0.5}},
+                "score_policy_with_skill": LEGACY_SCORE_POLICY,
+                "score_policy_without_skill": LEGACY_SCORE_POLICY,
+            }
+        },
+        use_llm_judge=False,
+    )
+
+    assert payload is not None
+    assert payload["overall_score"] == 0.6
+    assert payload["overall_lift"] == 0.2
+    assert payload["agents"]["opencode"]["lift"] == 0.2
+
+
+def test_legacy_report_honors_recorded_metric_membership_and_ignores_order() -> None:
+    payload = build_agent_eval_payload(
+        "recorded-metrics-demo",
+        {
+            "opencode": {
+                "execution_status": "succeeded",
+                "with_skill": {**dict.fromkeys(LEGACY_METRICS, 0.8), "security": 0.0},
+                "without_skill": dict.fromkeys(LEGACY_METRICS, 0.6),
+                "metrics_with_skill": list(LEGACY_METRICS),
+                "metrics_without_skill": list(reversed(LEGACY_METRICS)),
+                "score_policy_with_skill": LEGACY_SCORE_POLICY,
+                "score_policy_without_skill": LEGACY_SCORE_POLICY,
+            }
+        },
+        use_llm_judge=False,
+    )
+    assert payload is not None
+    assert payload["overall_score"] == 0.8
+    assert payload["agents"]["opencode"]["baseline"] == 0.6
+    assert payload["overall_lift"] == 0.2
+
+
+def test_partial_reports_do_not_rank_agents_scored_on_different_metrics() -> None:
+    payload = build_agent_eval_payload(
+        "partial-metrics-demo",
+        {
+            "codex": {
+                "execution_status": "succeeded",
+                "with_skill": {"security": 0.8},
+                "score_policy_with_skill": PARTIAL_SCORE_POLICY,
+            },
+            "opencode": {
+                "execution_status": "succeeded",
+                "with_skill": {"security": 0.4, "accuracy": 0.6},
+                "score_policy_with_skill": PARTIAL_SCORE_POLICY,
+            },
+        },
+        use_llm_judge=False,
+    )
+    assert payload is not None
+    assert payload["agents"]["codex"]["with_skill"] == 0.8
+    assert payload["agents"]["opencode"]["with_skill"] == 0.5
+    assert payload["best_agent"] == ""
+    assert payload["overall_score"] is None
+    assert payload["execution_status"] == "failed"
+
+
+@pytest.mark.parametrize("missing_metric", [False, True])
+def test_legacy_report_keeps_declared_metric_set_when_metric_names_are_absent(
+    tmp_path: Path, missing_metric: bool
+) -> None:
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    run_dir = tmp_path / "results"
+    _write_summary(run_dir, score=0.6)
+    summary_path = run_dir / "opencode/with-skill/summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("metrics")
+    summary["metric_set"] = "skill-evaluator-default-v2"
+    summary["score_policy"] = LEGACY_SCORE_POLICY
+    if missing_metric:
+        summary["scores"].pop("security")
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    result = agent_eval_result_from_directory(skill, run_dir, use_llm_judge=False)
+    assert result is not None
+    payload = result.metadata["agent_eval"]
+    assert payload["agents"]["opencode"]["metrics_with_skill"] == list(DEFAULT_METRICS)
+    assert payload["agents"]["opencode"]["with_skill"] == (None if missing_metric else 0.6)
+
+
+def test_unknown_report_policy_without_a_persisted_score_is_incomplete() -> None:
+    payload = build_agent_eval_payload(
+        "unknown-policy-demo",
+        {
+            "opencode": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 1,
+                "scored_attempts": 1,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.5),
+                "score_policy_with_skill": "future-weighted-policy-v2",
+            }
+        },
+        use_llm_judge=False,
+    )
+
+    assert payload is not None
+    assert payload["execution_status"] == "failed"
+    assert payload["overall_score"] is None
+    assert any("persisted" in error.lower() for error in payload["execution_errors"])
+
+
+def test_report_replaces_stale_formula_when_recorded_policy_is_unknown() -> None:
+    payload = build_agent_eval_payload(
+        "unknown-policy-definition-demo",
+        {
+            "opencode": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 1,
+                "scored_attempts": 1,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.5),
+                "overall_with_skill": 0.8,
+                "score_policy_with_skill": "future-weighted-policy-v2",
+            }
+        },
+        attempt_policy={
+            "score_policy": "future-weighted-policy-v2",
+            "score_definition": "overall = mean(Security, Correctness, Discoverability, Effectiveness, Efficiency)",
+        },
+        use_llm_judge=False,
+    )
+
+    assert payload is not None
+    definition = payload["attempt_policy"]["score_definition"]
+    assert "future-weighted-policy-v2" in definition
+    assert "formula unavailable" in definition
+    assert "mean(Security" not in definition
+
+
+def test_policy_only_attempt_artifact_gets_its_matching_definition(tmp_path: Path) -> None:
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    run_dir = tmp_path / "results" / "20260709_120099"
+    _write_summary(run_dir, score=0.5)
+    (run_dir / "attempt_policy.json").write_text(json.dumps({"score_policy": LEGACY_SCORE_POLICY}), encoding="utf-8")
+
+    tier3 = agent_eval_result_from_directory(skill, run_dir, use_llm_judge=False)
+
+    assert tier3 is not None
+    definition = tier3.metadata["agent_eval"]["attempt_policy"]["score_definition"]
+    assert LEGACY_SCORE_POLICY in definition
+    assert DEFAULT_SCORE_POLICY not in definition
+
+
+def test_default_v2_rerender_preserves_historical_baseline_lift_and_pass_at_k(tmp_path: Path) -> None:
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    run_dir = tmp_path / "results" / "20260709_120010"
+    agent_dir = run_dir / "opencode"
+    with_scores = {
+        "security": 0.5,
+        "skill_execution": 0.5,
+        "skill_efficiency": 0.5,
+        "accuracy": 0.5,
+        "goal_accuracy": 1.0,
+        "behavior_check": 1.0,
+    }
+    without_scores = {
+        "security": 0.75,
+        "skill_execution": 0.75,
+        "skill_efficiency": 0.75,
+        "accuracy": 0.75,
+        "goal_accuracy": 0.25,
+        "behavior_check": 0.25,
+    }
+    with_pass = {"rate": 0.75, "passed_cases": 3, "total_cases": 4}
+    without_pass = {"rate": 0.25, "passed_cases": 1, "total_cases": 4}
+
+    for condition, scores, overall, pass_at_k in (
+        ("with-skill", with_scores, 0.6667, with_pass),
+        ("without-skill", without_scores, 0.5833, without_pass),
+    ):
+        summary = agent_dir / condition / "summary.json"
+        summary.parent.mkdir(parents=True)
+        summary.write_text(
+            json.dumps(
+                {
+                    "execution_status": "succeeded",
+                    "execution_errors": [],
+                    "expected_attempts": 1,
+                    "scored_attempts": 1,
+                    "scores": scores,
+                    "overall_score": overall,
+                    "metric_set": "skill-evaluator-default-v2",
+                    "metrics": list(DEFAULT_METRICS),
+                    "num_trials": 0,
+                    "pass_at_k": pass_at_k,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    (agent_dir / "lift.json").write_text(
+        json.dumps({"overall": {"with_skill": 0.6667, "without_skill": 0.5833, "delta": 0.0833}}),
+        encoding="utf-8",
+    )
+    pass_lift = {"with_skill": 0.75, "without_skill": 0.25, "delta": 0.5}
+    (agent_dir / "pass_at_k_lift.json").write_text(json.dumps(pass_lift), encoding="utf-8")
+    (run_dir / "attempt_policy.json").write_text(
+        json.dumps(
+            {
+                "max_attempts": 1,
+                "pass_threshold": 0.5,
+                "stop_on_pass": False,
+                "score_definition": "overall = mean(security, skill_execution, skill_efficiency, accuracy, goal_accuracy, behavior_check)",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tier3 = agent_eval_result_from_directory(skill, run_dir, use_llm_judge=False)
+
+    assert tier3 is not None
+    payload = tier3.metadata["agent_eval"]
+    agent = payload["agents"]["opencode"]
+    assert payload["score_policy"] == LEGACY_SCORE_POLICY
+    assert agent["with_skill"] == pytest.approx(0.6667)
+    assert agent["baseline"] == pytest.approx(0.5833)
+    assert agent["lift"] == pytest.approx(0.0833)
+    assert agent["pass_at_k"] == {
+        "with_skill": with_pass,
+        "without_skill": without_pass,
+        "lift": pass_lift,
+    }
 
 
 def test_canonical_report_prefers_agentskills_dataset_fields() -> None:
@@ -1481,6 +1974,7 @@ def test_global_report_budget_prioritizes_best_agent_details() -> None:
         {
             "entry_id": f"low-{index:03d}",
             "security": 0.1,
+            "goal_accuracy": 0.1,
             "custom_metrics": custom_scores,
         }
         for index in range(256)
@@ -1493,7 +1987,7 @@ def test_global_report_budget_prioritizes_best_agent_details() -> None:
                 "execution_errors": [],
                 "expected_attempts": len(low_agent_rewards),
                 "scored_attempts": len(low_agent_rewards),
-                "with_skill": {"security": 0.1},
+                "with_skill": {"security": 0.1, "goal_accuracy": 0.1},
                 "custom_with_skill": custom_scores,
                 "rewards": low_agent_rewards,
             },
@@ -1534,9 +2028,9 @@ def test_payload_prunes_oversized_non_best_conditions_before_best_evidence() -> 
                 "execution_errors": [],
                 "expected_attempts": 1,
                 "scored_attempts": 1,
-                "with_skill": {"security": 0.1},
+                "with_skill": {"security": 0.1, "goal_accuracy": 0.1},
                 "conditions": {"with_skill": {"diagnostic": "x" * (3 * 1024 * 1024)}},
-                "rewards": [{"entry_id": "low-case", "security": 0.1}],
+                "rewards": [{"entry_id": "low-case", "security": 0.1, "goal_accuracy": 0.1}],
             },
             "zzz": {
                 "execution_status": "succeeded",
@@ -1562,8 +2056,97 @@ def test_payload_prunes_oversized_non_best_conditions_before_best_evidence() -> 
     assert any(card["evidence"] for card in best_cards)
     assert any(card["evidence"] for card in payload["evaluator_cards"])
     assert payload["provenance"]["raw_trial_rewards"]["zzz"]
-    assert payload["agents"]["aaa"]["conditions"] == {}
+    assert payload["agents"]["aaa"]["conditions"] == {
+        "with_skill": {
+            "execution_status": None,
+            "execution_errors": None,
+            "expected_attempts": 0,
+            "scored_attempts": 0,
+        }
+    }
     assert payload["report_truncation"]["omitted"]["non_best_agent_details"] > 0
+
+
+def _publication_ready_oversized_condition_payload(*, extra_condition: bool = False) -> dict:
+    from skillevaluator.tier3.harbor.metrics import DEFAULT_METRICS
+
+    conditions = {
+        "with_skill": {
+            "execution_status": "succeeded",
+            "execution_errors": [],
+            "expected_attempts": 1,
+            "scored_attempts": 1,
+            "diagnostic": "x" * (3 * 1024 * 1024),
+        },
+        "without_skill": {
+            "execution_status": "succeeded",
+            "execution_errors": [],
+            "expected_attempts": 1,
+            "scored_attempts": 1,
+        },
+    }
+    if extra_condition:
+        conditions["forged"] = {"execution_status": "succeeded"}
+    payload = build_agent_eval_payload(
+        "condition-budget",
+        {
+            "codex": {
+                "model": "test-model",
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 2,
+                "scored_attempts": 2,
+                "conditions": conditions,
+                "with_skill": dict.fromkeys(DEFAULT_METRICS, 0.9),
+                "without_skill": dict.fromkeys(DEFAULT_METRICS, 0.4),
+                "lift": dict.fromkeys(DEFAULT_METRICS, 0.5),
+                "rewards": [{"entry_id": "case-1", **dict.fromkeys(DEFAULT_METRICS, 0.9)}],
+                "rewards_baseline": [{"entry_id": "case-1", **dict.fromkeys(DEFAULT_METRICS, 0.4)}],
+            }
+        },
+        dataset=[{"id": "case-1", "expected_skill": "condition-budget"}],
+        attempt_policy={"max_attempts": 1, "pass_threshold": 0.5, "stop_on_pass": False},
+        env_mode="docker",
+        evaluated_at="2026-09-12T12:00:00+00:00",
+        evaluator_version="1.0.0",
+        run_id="condition-budget-run",
+        publication_target={
+            "skill_name": "condition-budget",
+            "skill_digest": "sha256:" + "a" * 64,
+            "skill_digest_algorithm": "skill-evaluator-source-tree/2",
+        },
+        use_llm_judge=False,
+    )
+    assert payload is not None
+    return payload
+
+
+def test_payload_budget_preserves_publication_condition_truth_fields() -> None:
+    payload = _publication_ready_oversized_condition_payload()
+
+    assert agent_eval_publication_evidence_complete(payload) is True
+    assert payload["agents"]["codex"]["conditions"] == {
+        "with_skill": {
+            "execution_status": "succeeded",
+            "execution_errors": [],
+            "expected_attempts": 1,
+            "scored_attempts": 1,
+        },
+        "without_skill": {
+            "execution_status": "succeeded",
+            "execution_errors": [],
+            "expected_attempts": 1,
+            "scored_attempts": 1,
+        },
+    }
+
+
+def test_payload_budget_does_not_repair_extra_condition_keys() -> None:
+    payload = _publication_ready_oversized_condition_payload(extra_condition=True)
+
+    conditions = payload["agents"]["codex"]["conditions"]
+    assert "invalid_condition_shape" in conditions
+    assert agent_eval_publication_evidence_complete(payload) is False
 
 
 def test_non_finite_report_numbers_are_sanitized_before_canonical_json() -> None:
@@ -1698,14 +2281,17 @@ def test_invalid_legacy_attempt_threshold_does_not_crash_canonical_report(invali
     json.dumps(payload, allow_nan=False)
 
 
-def test_canonical_html_serializer_rejects_non_finite_numbers() -> None:
+def test_canonical_report_serializers_disclose_non_finite_numbers() -> None:
     with pytest.raises(ValueError, match="Out of range float values"):
         _compact_json({"score": float("nan")})
 
     result = ValidationResult(validator_name="AGENT_EVAL", validator_description="Live evaluation")
     result.metadata["agent_eval"] = {"score": float("inf")}
-    with pytest.raises(ValueError, match="Out of range float values"):
-        JSONReporter(include_timestamp=False).render_all([result])
+    payload = json.loads(JSONReporter(include_timestamp=False).render_all([result]))
+
+    assert payload["tier3"]["score"] is None
+    assert payload["tier3"]["_serialization_truncated"] is True
+    assert payload["publication_status"] == "incomplete"
 
 
 def test_sampled_evidence_carries_lower_bound_metadata_and_honest_wording() -> None:
@@ -1806,6 +2392,24 @@ def test_canonical_payload_enforces_total_serialized_budget() -> None:
     assert truncation["truncated"] is True
     assert truncation["omitted"]["comparison_payloads"] == 1
     assert len(encoded) <= truncation["payload_budget_bytes"]
+
+
+def test_minimal_payload_preserves_score_policy() -> None:
+    payload = {
+        "summary": {"score_policy": DEFAULT_SCORE_POLICY},
+        "score_policy": DEFAULT_SCORE_POLICY,
+        "attempt_policy": {
+            "score_definition": "x" * (3 * 1024 * 1024),
+            "score_policy": DEFAULT_SCORE_POLICY,
+        },
+    }
+
+    _replace_with_minimal_payload(payload, _ReportBudget())
+
+    assert payload["summary"]["score_policy"] == DEFAULT_SCORE_POLICY
+    assert payload["score_policy"] == DEFAULT_SCORE_POLICY
+    assert payload["attempt_policy"]["score_policy"] == DEFAULT_SCORE_POLICY
+    assert len(payload["attempt_policy"]["score_definition"]) == 1024
 
 
 def test_unpaired_id_artifact_survives_loader_report_budget_and_html(tmp_path: Path) -> None:
@@ -1942,6 +2546,194 @@ def test_rerender_uses_run_owned_dataset_and_evaluator_version(tmp_path: Path) -
     assert payload["dataset_summary"] == snapshot["dataset_summary"]
     assert payload["dataset_digest"] == snapshot["dataset_digest"]
     assert payload["evaluator_version"] == "evaluated-version-1.2.3"
+
+
+def test_rerender_uses_persisted_publication_identity_after_live_source_changes(tmp_path: Path) -> None:
+    from skillevaluator.publication_identity import publication_target_from_path
+
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    manifest = skill / "SKILL.md"
+    manifest.write_text("# evaluated source\n", encoding="utf-8")
+    persisted_target = publication_target_from_path(skill)
+    assert persisted_target is not None
+
+    run_dir = tmp_path / "results" / "20260709_120009"
+    _write_summary(run_dir)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_dir.name,
+                "publication_target": persisted_target,
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest.write_text("# changed after evaluation\n", encoding="utf-8")
+
+    tier3 = agent_eval_result_from_directory(skill, run_dir, use_llm_judge=False)
+
+    assert tier3 is not None
+    payload = tier3.metadata["agent_eval"]
+    assert payload["publication_target"] == persisted_target
+    assert payload["summary"]["publication_target"] == persisted_target
+    assert payload["run_id"] == run_dir.name
+    assert payload["summary"]["run_id"] == run_dir.name
+    assert tier3.metadata["publication_target"] == persisted_target
+    assert tier3.metadata["run_id"] == run_dir.name
+
+
+def test_rerender_preserves_persisted_skill_name_when_live_path_is_renamed(tmp_path: Path) -> None:
+    from skillevaluator.publication_identity import publication_target_from_path
+
+    original_skill = tmp_path / "demo"
+    original_skill.mkdir()
+    (original_skill / "SKILL.md").write_text("# evaluated source\n", encoding="utf-8")
+    persisted_target = publication_target_from_path(original_skill)
+    assert persisted_target is not None
+
+    renamed_skill = original_skill.rename(tmp_path / "renamed")
+    run_dir = tmp_path / "results" / "20260709_120012"
+    _write_summary(run_dir)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_dir.name,
+                "publication_target": persisted_target,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tier3 = agent_eval_result_from_directory(renamed_skill, run_dir, use_llm_judge=False)
+
+    assert tier3 is not None
+    payload = tier3.metadata["agent_eval"]
+    assert payload["skill_name"] == persisted_target["skill_name"] == "demo"
+    assert payload["summary"]["skill_name"] == "demo"
+
+
+def test_rerender_rejects_canonical_target_when_run_marks_identity_conflict(tmp_path: Path) -> None:
+    from skillevaluator.publication_identity import publication_target_from_path
+    from skillevaluator.reporting.base import assess_tier3_evidence
+
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# evaluated source\n", encoding="utf-8")
+    run_start_target = publication_target_from_path(skill)
+    assert run_start_target is not None
+    run_end_target = {**run_start_target, "skill_digest": "sha256:" + "f" * 64}
+
+    run_dir = tmp_path / "results" / "20260709_120010"
+    _write_summary(run_dir)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_dir.name,
+                "publication_target": run_start_target,
+                "publication_target_conflict": {
+                    "run_start": run_start_target,
+                    "run_end": run_end_target,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tier3 = agent_eval_result_from_directory(skill, run_dir, use_llm_judge=False)
+
+    assert tier3 is not None
+    payload = tier3.metadata["agent_eval"]
+    assert payload["publication_target"] is None
+    assert payload["summary"]["publication_target"] is None
+    assert payload["publication_target_conflict"] == "source changed during evaluation"
+    assert payload["summary"]["publication_target_conflict"] == "source changed during evaluation"
+    assert "publication_target" not in tier3.metadata
+    assert tier3.metadata["publication_target_conflict"] == "source changed during evaluation"
+    assert tier3.metadata["run_id"] == run_dir.name
+    assessment = assess_tier3_evidence([tier3], payload, expected_skill_name="demo")
+    assert assessment.evidence_complete is False
+    assert assessment.reason == "Tier 3 source identity changed during evaluation."
+    report = json.loads(JSONReporter(include_timestamp=False).render_all([tier3]))
+    assert report["results"][0]["publication_target_conflict"] == "source changed during evaluation"
+
+
+def test_rerender_reports_runtime_context_conflict_without_claiming_source_mutation(tmp_path: Path) -> None:
+    from skillevaluator.publication_identity import publication_target_from_path
+    from skillevaluator.reporting.base import assess_tier3_evidence
+
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# evaluated source\n", encoding="utf-8")
+    run_start_target = publication_target_from_path(skill)
+    assert run_start_target is not None
+
+    run_dir = tmp_path / "results" / "20260709_120013"
+    _write_summary(run_dir)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_dir.name,
+                "publication_target": None,
+                "publication_target_conflict": {
+                    "run_start": run_start_target,
+                    "run_end": None,
+                    "reason_code": "runtime_context_outside_publication_target",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tier3 = agent_eval_result_from_directory(skill, run_dir, use_llm_judge=False)
+
+    assert tier3 is not None
+    payload = tier3.metadata["agent_eval"]
+    marker = "runtime context is not bound to publication target"
+    assert payload["publication_target"] is None
+    assert payload["summary"]["publication_target"] is None
+    assert payload["publication_target_conflict"] == marker
+    assert payload["summary"]["publication_target_conflict"] == marker
+    assert "publication_target" not in tier3.metadata
+    assert tier3.metadata["publication_target_conflict"] == marker
+    assessment = assess_tier3_evidence([tier3], payload, expected_skill_name="demo")
+    assert assessment.evidence_complete is False
+    assert assessment.reason == "Tier 3 runtime context is not bound to the publication target."
+    report = json.loads(JSONReporter(include_timestamp=False).render_all([tier3]))
+    assert report["results"][0]["publication_target_conflict"] == marker
+
+
+def test_rerender_does_not_replace_malformed_persisted_identity_with_engine_claim(tmp_path: Path) -> None:
+    from skillevaluator.publication_identity import publication_target_from_path
+
+    skill = tmp_path / "demo"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# evaluated source\n", encoding="utf-8")
+    engine_target = publication_target_from_path(skill)
+    assert engine_target is not None
+
+    run_dir = tmp_path / "results" / "20260709_120011"
+    _write_summary(run_dir)
+    (run_dir / "result.json").write_text("{not-json", encoding="utf-8")
+
+    tier3 = agent_eval_result_from_directory(
+        skill,
+        run_dir,
+        engine_result={
+            "run_id": run_dir.name,
+            "publication_target": engine_target,
+        },
+        use_llm_judge=False,
+    )
+
+    assert tier3 is not None
+    payload = tier3.metadata["agent_eval"]
+    assert payload["publication_target"] is None
+    assert payload["summary"]["publication_target"] is None
+    assert payload["run_id"] is None
+    assert payload["summary"]["run_id"] is None
+    assert "publication_target" not in tier3.metadata
+    assert "run_id" not in tier3.metadata
 
 
 def test_legacy_rerender_does_not_claim_current_dataset_or_reader_version(tmp_path: Path) -> None:
@@ -2140,6 +2932,312 @@ def test_pass_at_k_uncertainty_and_paired_evidence_render() -> None:
     assert "Exact McNemar p=1" in html
     assert "Minimum attainable p with 1 observed discordant pair:" in html
     assert "resolution-limited at \N{GREEK SMALL LETTER ALPHA}=0.05" in html
+
+
+def _render_paired_comparison(paired_comparison: object) -> str:
+    payload = build_agent_eval_payload(
+        "paired-sanitization-demo",
+        {
+            "codex": {
+                "execution_status": "succeeded",
+                "execution_errors": [],
+                "expected_attempts": 2,
+                "scored_attempts": 2,
+                "overall_with_skill": 1.0,
+                "overall_without_skill": 0.0,
+                "pass_with_skill": {"rate": 1.0, "passed_cases": 1, "total_cases": 1},
+                "pass_without_skill": {"rate": 0.0, "passed_cases": 0, "total_cases": 1},
+                "pass_lift": {"delta": 1.0, "paired_comparison": paired_comparison},
+            }
+        },
+        attempt_policy={"max_attempts": 1, "pass_threshold": 0.5},
+        use_llm_judge=False,
+    )
+    assert payload is not None
+    return _render_agent_payload(payload)
+
+
+@pytest.mark.parametrize("paired_comparison", [[1], "bad"], ids=["list", "string"])
+def test_pass_at_k_render_drops_nonmapping_paired_comparison(paired_comparison: object) -> None:
+    html = _render_paired_comparison(paired_comparison)
+    sanitized = _embedded_tier3_payload(html)
+
+    assert "Paired cases:" not in html
+    assert "Exact McNemar p=" not in html
+    assert "paired_comparison" not in sanitized["agents"]["codex"]["pass_at_k"]["lift"]
+
+
+@pytest.mark.parametrize(
+    "mcnemar_exact",
+    [
+        [1],
+        "bad",
+        {},
+        {"p_value": None},
+        {"p_value": "bad"},
+        {"p_value": []},
+        {"p_value": {}},
+    ],
+    ids=["list", "string", "missing", "none", "numeric-string", "nested-list", "nested-mapping"],
+)
+def test_pass_at_k_render_drops_malformed_mcnemar_exact(mcnemar_exact: object) -> None:
+    html = _render_paired_comparison(
+        {
+            "pairing_status": "complete",
+            "paired_cases": 1,
+            "with_skill_only_pass": 1,
+            "without_skill_only_pass": 0,
+            "both_pass": 0,
+            "neither_pass": 0,
+            "discordant_cases": 1,
+            "paired_rate_delta": 1.0,
+            "mcnemar_exact": mcnemar_exact,
+        }
+    )
+
+    assert "Paired cases: 1" in html
+    assert "Exact McNemar p=" not in html
+
+
+@pytest.mark.parametrize(
+    "minimum_attainable_p_value",
+    [None, "bad", [], {}],
+    ids=["none", "string", "list", "mapping"],
+)
+def test_pass_at_k_render_drops_malformed_minimum_attainable_probability(
+    minimum_attainable_p_value: object,
+) -> None:
+    html = _render_paired_comparison(
+        {
+            "pairing_status": "complete",
+            "paired_cases": 1,
+            "with_skill_only_pass": 1,
+            "without_skill_only_pass": 0,
+            "both_pass": 0,
+            "neither_pass": 0,
+            "discordant_cases": 1,
+            "paired_rate_delta": 1.0,
+            "mcnemar_exact": {
+                "p_value": 1.0,
+                "p_value_text": "1",
+                "minimum_attainable_p_value": minimum_attainable_p_value,
+            },
+        }
+    )
+
+    assert "Exact McNemar p=1." in html
+    assert "Minimum attainable p" not in html
+
+
+def test_pass_at_k_render_preserves_valid_underflow_and_omission_contract() -> None:
+    html = _render_paired_comparison(
+        {
+            "pairing_status": "complete",
+            "paired_cases": 15_000,
+            "with_skill_only_pass": 15_000,
+            "without_skill_only_pass": 0,
+            "both_pass": 0,
+            "neither_pass": 0,
+            "discordant_cases": 15_000,
+            "paired_rate_delta": 1.0,
+            "mcnemar_exact": {
+                "p_value": None,
+                "p_value_text": "1.395e-4515",
+                "p_value_exact": None,
+                "p_value_exact_omitted": True,
+                "p_value_exact_omitted_reason": "decimal_digit_limit",
+                "p_value_numeric_underflow": True,
+                "minimum_attainable_p_value": None,
+                "minimum_attainable_p_value_text": "1.395e-4515",
+                "minimum_attainable_p_value_exact": None,
+                "minimum_attainable_p_value_exact_omitted": True,
+                "minimum_attainable_p_value_exact_omitted_reason": "decimal_digit_limit",
+                "minimum_attainable_p_value_numeric_underflow": True,
+                "resolution_limited_at_alpha_0_05": False,
+            },
+        }
+    )
+    embedded = _embedded_tier3_payload(html)
+    exact = embedded["agents"]["codex"]["pass_at_k"]["lift"]["paired_comparison"]["mcnemar_exact"]
+
+    assert "Exact McNemar p=1.395e-4515." in html
+    assert exact["p_value"] is None
+    assert exact["minimum_attainable_p_value"] is None
+    assert exact["p_value_exact"] is None
+    assert exact["minimum_attainable_p_value_exact"] is None
+    assert exact["p_value_exact_omitted"] is True
+    assert exact["minimum_attainable_p_value_exact_omitted"] is True
+
+
+@pytest.mark.parametrize(
+    ("p_value_text", "underflow_flag"),
+    [("0.5", True), ("0", True), ("1e-5000", False), ("1e-5000", None)],
+    ids=["representable", "zero", "false-flag", "missing-flag"],
+)
+def test_pass_at_k_render_rejects_false_mcnemar_underflow(
+    p_value_text: str,
+    underflow_flag: bool | None,
+) -> None:
+    mcnemar_exact: dict[str, object] = {
+        "p_value": None,
+        "p_value_text": p_value_text,
+    }
+    if underflow_flag is not None:
+        mcnemar_exact["p_value_numeric_underflow"] = underflow_flag
+    html = _render_paired_comparison(
+        {
+            "pairing_status": "complete",
+            "paired_cases": 1,
+            "with_skill_only_pass": 1,
+            "without_skill_only_pass": 0,
+            "both_pass": 0,
+            "neither_pass": 0,
+            "discordant_cases": 1,
+            "mcnemar_exact": mcnemar_exact,
+        }
+    )
+
+    assert "Exact McNemar p=" not in html
+
+
+@pytest.mark.parametrize(
+    ("minimum_text", "underflow_flag"),
+    [("0.5", True), ("0", True), ("1e-5000", False), ("1e-5000", None)],
+    ids=["representable", "zero", "false-flag", "missing-flag"],
+)
+def test_pass_at_k_render_rejects_false_minimum_attainable_underflow(
+    minimum_text: str,
+    underflow_flag: bool | None,
+) -> None:
+    mcnemar_exact: dict[str, object] = {
+        "p_value": 1.0,
+        "p_value_text": "1",
+        "minimum_attainable_p_value": None,
+        "minimum_attainable_p_value_text": minimum_text,
+    }
+    if underflow_flag is not None:
+        mcnemar_exact["minimum_attainable_p_value_numeric_underflow"] = underflow_flag
+    html = _render_paired_comparison(
+        {
+            "pairing_status": "complete",
+            "paired_cases": 1,
+            "with_skill_only_pass": 1,
+            "without_skill_only_pass": 0,
+            "both_pass": 0,
+            "neither_pass": 0,
+            "discordant_cases": 1,
+            "mcnemar_exact": mcnemar_exact,
+        }
+    )
+
+    assert "Exact McNemar p=1." in html
+    assert "Minimum attainable p" not in html
+
+
+@pytest.mark.parametrize(
+    "paired_comparison",
+    [
+        {
+            "pairing_status": "partial",
+            "paired_cases": 1,
+            "with_skill_only_pass": 1,
+            "without_skill_only_pass": 0,
+            "both_pass": 0,
+            "neither_pass": 0,
+            "discordant_cases": 1,
+            "mcnemar_exact": {"p_value": 1.0, "p_value_text": "1"},
+        },
+        {
+            "pairing_status": "complete",
+            "paired_cases": 1,
+            "with_skill_only_pass": 10,
+            "without_skill_only_pass": 5,
+            "both_pass": 10,
+            "neither_pass": 5,
+            "discordant_cases": 15,
+            "mcnemar_exact": {"p_value": 1.0, "p_value_text": "1"},
+        },
+        {
+            "pairing_status": "complete",
+            "paired_cases": 1,
+            "with_skill_only_pass": 1,
+            "without_skill_only_pass": 0,
+            "both_pass": 0,
+            "neither_pass": 0,
+            "discordant_cases": 99,
+            "mcnemar_exact": {"p_value": 1.0, "p_value_text": "1"},
+        },
+    ],
+    ids=["partial", "outcome-sum", "discordant-sum"],
+)
+def test_pass_at_k_render_drops_exact_test_for_inconsistent_pairing(
+    paired_comparison: dict[str, object],
+) -> None:
+    html = _render_paired_comparison(paired_comparison)
+
+    assert "Exact McNemar p=" not in html
+
+
+def test_pass_at_k_render_derives_paired_delta_from_validated_outcomes() -> None:
+    html = _render_paired_comparison(
+        {
+            "pairing_status": "complete",
+            "paired_cases": 4,
+            "with_skill_only_pass": 1,
+            "without_skill_only_pass": 0,
+            "both_pass": 2,
+            "neither_pass": 1,
+            "discordant_cases": 1,
+            "paired_rate_delta": -1.0,
+            "mcnemar_exact": {"p_value": 1.0, "p_value_text": "1"},
+        }
+    )
+    embedded = _embedded_tier3_payload(html)
+    paired = embedded["agents"]["codex"]["pass_at_k"]["lift"]["paired_comparison"]
+
+    assert "Paired pass-rate delta: +25.0%." in html
+    assert paired["paired_rate_delta"] == 0.25
+
+
+def test_pass_at_k_render_preserves_rounded_subnormal_mcnemar_probability() -> None:
+    pair_count = 1_024
+    case_ids = [f"case-{index}" for index in range(pair_count)]
+    paired = _paired_pass_comparison(
+        {
+            "total_cases": pair_count,
+            "cases": {case_id: {"passed": True} for case_id in case_ids},
+        },
+        {
+            "total_cases": pair_count,
+            "cases": {case_id: {"passed": False} for case_id in case_ids},
+        },
+    )
+
+    html = _render_paired_comparison(paired)
+
+    assert paired["mcnemar_exact"]["p_value_text"] == "1.112536929e-308"
+    assert "Exact McNemar p=1.112536929e-308." in html
+    assert "Minimum attainable p with 1024 observed discordant pairs: 1.112536929e-308." in html
+
+
+def test_pass_at_k_render_preserves_adjacent_subnormal_mcnemar_probability() -> None:
+    pair_count = 1_079
+    case_ids = [f"case-{index}" for index in range(pair_count)]
+    paired = _paired_pass_comparison(
+        {
+            "total_cases": pair_count,
+            "cases": {case_id: {"passed": index < pair_count - 1} for index, case_id in enumerate(case_ids)},
+        },
+        {
+            "total_cases": pair_count,
+            "cases": {case_id: {"passed": index == pair_count - 1} for index, case_id in enumerate(case_ids)},
+        },
+    )
+    expected_text = paired["mcnemar_exact"]["p_value_text"]
+
+    html = _render_paired_comparison(paired)
+
+    assert f"Exact McNemar p={expected_text}." in html
 
 
 def test_pass_at_k_render_preserves_exact_subnormal_mcnemar_probability() -> None:
