@@ -10,7 +10,7 @@
 
 > 📺 **Livestream:** [Ask the Experts: Evaluating Agent Skills](https://www.youtube.com/watch?v=4rI0zATFxYI)
 
-SkillEvaluator checks AI agent skills and measures their effect on an agent's
+SkillEvaluator is an open-source tool that checks AI agent skills and measures their effect on an agent's
 task results. Start with a quality check or model-backed feedback, then compare
 live runs with and without a skill.
 
@@ -20,8 +20,7 @@ the [NVIDIA Verified Skills pipeline](https://github.com/NVIDIA/skills).
 
 ## Quickstart
 
-Choose either starting path. Both use a complete `text-analyzer` example included
-in this repository; you can try your own skill afterward.
+Choose a starting path. Both use the bundled `text-analyzer` skill; try your own afterward.
 
 | Start here | Requires | First result |
 | --- | --- | --- |
@@ -36,8 +35,8 @@ git clone --depth 1 https://github.com/NVIDIA/SkillEvaluator.git
 cd SkillEvaluator
 ```
 
-Run the commands below from this checkout. uv provisions Python 3.13 and installs
-the dependencies for the selected path. For a standalone CLI installation, see
+uv provisions Python 3.13 and installs each path's dependencies. Run from this
+checkout. For a standalone CLI, see
 [Installation](https://docs.nvidia.com/skills/skillevaluator/installation).
 
 ### Run without an LLM
@@ -48,17 +47,15 @@ uv run --python 3.13 skillevaluator quality-check \
   -r cli -r json -o reports/first-quality
 ```
 
-No API key, external scanner, GPU, or Docker is needed for this check. With the
-current checker, the example scores **84.5/100 (B)** and exits `0`, with seven
-non-blocking findings explaining possible improvements. The default passing
-threshold is 70. Read the findings in the terminal or the saved
+No API key, external scanner, GPU, or Docker is needed. The example scores
+**84.5/100 (B)** and exits `0`, with seven non-blocking findings. The default
+passing threshold is 70. Read the terminal or saved
 `reports/first-quality/skillevaluator-quality.json` report.
 
-This is a static quality check. Full security coverage requires the scanners
-listed below, and agent improvement is measured by live evaluation. The report
-keeps publication evidence `INCOMPLETE` when only quality has been checked.
-To check your own skill, replace the example path with the directory containing
-your `SKILL.md`. See the [keyless walkthrough](docs/quickstart.mdx#run-without-an-llm).
+This checks static quality; publication evidence stays `INCOMPLETE`. Security
+coverage needs scanners, and agent impact needs live evaluation. To check your
+own skill, replace the example path with your `SKILL.md` directory. See the
+[keyless walkthrough](docs/quickstart.mdx#run-without-an-llm).
 
 ### Use NVIDIA Build
 
@@ -80,17 +77,14 @@ uv run --python 3.13 --extra llm skillevaluator rubric-eval \
   -r cli -r json -o reports/first-build
 ```
 
-The `llm` extra adds the model clients. This command sends the skill's
-documentation to the model and writes rubric scores and feedback to the terminal
-and `reports/first-build/skillevaluator-rubric.json`. It needs no agent runtime
-or Docker. A completed evaluation can still fail its rubric thresholds; inspect
-the findings to understand the result.
+The `llm` extra adds model clients. The command sends skill documentation to the
+model and writes feedback to the terminal and
+`reports/first-build/skillevaluator-rubric.json`. No agent runtime or Docker is
+needed. Completed evaluations can still fail rubric thresholds; inspect the findings.
 
-NVIDIA Build supplies configured model defaults, and the same key can support
-Tier 2 embeddings and supported Tier 3 agents. Follow the
-[Build walkthrough](docs/quickstart.mdx#use-nvidia-build) for access and output
-details, or [Providers & Credentials](docs/configuration.mdx) for model overrides
-and other providers. Use Tier 3 below when you want observed agent task outcomes.
+Build supplies model defaults; the same key supports Tier 2 embeddings and
+supported Tier 3 agents. See the [Build walkthrough](docs/quickstart.mdx#use-nvidia-build)
+or [Providers & Credentials](docs/configuration.mdx) for overrides and other providers.
 
 ## Three-tier overview
 
@@ -109,16 +103,13 @@ Full static Tier 1 needs Semgrep, SkillSpector, and Gitleaks in addition to the
 `--no-llm` disables model-backed stages; it does not remove scanner requirements.
 Missing required scanner evidence is reported as `INCOMPLETE` and exits nonzero.
 [SkillSpector](https://github.com/NVIDIA/SkillSpector) provides specialized skill
-security scanning; [Harbor](https://github.com/harbor-framework/harbor) powers
-sandboxed agent evaluation.
+security scanning; [Harbor](https://github.com/harbor-framework/harbor), the
+open-source agent evaluation framework, powers sandboxed agent runs.
 
-Tier 2 checks repeated guidance within the skill. Without a catalog, it explicitly
-reports that inter-skill comparison did not run. Tier 3 reuses valid existing
-evaluation sources or creates one starter case when none exists, then runs with
-and without the skill. Review starter cases; they provide limited coverage.
-
-See the [tier guides](https://docs.nvidia.com/skills/skillevaluator/) for setup,
-individual checks, and how to interpret the results.
+Tier 2 reports when inter-skill comparison did not run. Tier 3 reuses valid
+evaluation sources or creates one starter case, then runs with and without the
+skill. Starter cases provide limited coverage. See the
+[tier guides](https://docs.nvidia.com/skills/skillevaluator/) for details.
 
 ## Run the combined pipeline
 
@@ -129,12 +120,11 @@ uv run --python 3.13 --extra all skillevaluator doctor --env-mode docker
 uv run --python 3.13 --extra all skillevaluator validate ./my-skill
 ```
 
-`doctor` checks readiness; it does not prove inference or grading will succeed.
-`validate` runs all tiers with autopilot by default for skills. `--full` remains
-supported but is unnecessary. Use `--tiers 1,2` or `--no-tier3` to skip live
-evaluation, or `--tiers 1` for the static suite. `--no-autopilot` requires an
-existing evaluation source. Rules, workflows, and plugins keep their applicable
-validation stages without automatically enabling skill evaluation.
+`doctor` checks readiness, not inference success. `validate` runs all tiers
+with autopilot by default for skills; `--full` remains supported but is unnecessary.
+Use `--tiers 1,2` or `--no-tier3` to skip live evaluation, or `--tiers 1` for static
+checks. `--no-autopilot` requires an existing source. Other artifact types retain
+their applicable stages without automatically enabling skill evaluation.
 
 Tier 1 always gates `validate`. Tier 2 gates by default;
 `--no-block-on-dedup` makes its findings advisory. Tier 3 is advisory by default;
@@ -151,12 +141,8 @@ uv run --python 3.13 --extra tier3 skillevaluator tier3 create-eval-dataset ./my
 
 ## Run from a source checkout
 
-The Quickstart uses a source checkout. Keep `uv run --python 3.13` on commands
-for base checks, and add the extra for the feature you use: `--extra llm`,
-`--extra security`, `--extra tier2`, or `--extra tier3`. The optional `all` bundle
-includes the evaluation extras; external scanners, agent runtimes, and sandboxes
-have separate requirements. See [Installation](docs/installation.mdx#choosing-extras)
-for full setup and standalone CLI upgrades.
+Use `uv run --python 3.13` with the relevant extra. See
+[Installation](docs/installation.mdx#choosing-extras) for extras and standalone upgrades.
 
 ## Research and citation
 
@@ -185,8 +171,7 @@ use.
 
 ## Contributing
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), include tests
-for behavior changes, and run the checks before opening a pull request:
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and run:
 
 ```bash
 make lint && make test && make build
