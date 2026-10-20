@@ -234,33 +234,33 @@ DEFAULT_ENV_MODE = "docker"
 
 
 # ---------------------------------------------------------------------------
-# Environment-mode plugins
+# Custom execution backends
 # ---------------------------------------------------------------------------
 
 #: Entry-point group through which an installed package adds an ``--env-mode``.
-#: The entry-point name is the mode name; its value names an ``EnvModePlugin``
+#: The entry-point name is the mode name; its value names an ``EnvironmentBackendSpec``
 #: instance, or a zero-argument callable that returns one.
-ENV_MODE_PLUGIN_GROUP = "skillevaluator.env_modes"
-#: Set to ``1`` to ignore every installed environment-mode plugin.
-DISABLE_ENV_MODE_PLUGINS_ENV = "SKILLEVALUATOR_DISABLE_ENV_MODE_PLUGINS"
+ENV_MODE_ENTRY_POINT_GROUP = "skillevaluator.env_modes"
+#: Set to ``1`` to ignore every installed custom execution backend.
+DISABLE_CUSTOM_BACKENDS_ENV = "SKILLEVALUATOR_DISABLE_CUSTOM_BACKENDS"
 
-_PLUGIN_MODE_NAME_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
-_PLUGIN_IMPORT_PATH_RE = re.compile(r"[A-Za-z_][\w.]*:[A-Za-z_]\w*")
+_BACKEND_NAME_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+_IMPORT_PATH_RE = re.compile(r"[A-Za-z_][\w.]*:[A-Za-z_]\w*")
 # Upper case only: SkillEvaluator compares host variable names case-insensitively.
-_PLUGIN_ENV_VAR_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
+_HOST_ENV_VAR_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
-class EnvModePluginError(ValueError):
-    """An installed environment-mode plugin could not be loaded or is malformed."""
+class EnvironmentBackendError(ValueError):
+    """An installed custom execution backend could not be loaded or is malformed."""
 
 
 @dataclass(frozen=True)
-class EnvModePlugin:
+class EnvironmentBackendSpec:
     """Describe one ``--env-mode`` that an installed package contributes.
 
     SkillEvaluator dispatches the mode to Harbor through ``--env IMPORT_PATH``
     and applies the same kwarg, credential, and runtime-env policy it applies to
-    Harbor-native backends. The plugin module is imported only when its mode is
+    Harbor-native backends. The backend module is imported only when its mode is
     selected, so it may import Harbor at module level.
     """
 
@@ -291,34 +291,34 @@ class EnvModePlugin:
     install_hint: str = ""
 
     def __post_init__(self) -> None:
-        if not isinstance(self.import_path, str) or not _PLUGIN_IMPORT_PATH_RE.fullmatch(self.import_path):
-            raise EnvModePluginError("import_path must be 'package.module:ClassName'")
-        if self.prerequisites is not None and not _PLUGIN_IMPORT_PATH_RE.fullmatch(str(self.prerequisites)):
-            raise EnvModePluginError("prerequisites must be 'package.module:function'")
+        if not isinstance(self.import_path, str) or not _IMPORT_PATH_RE.fullmatch(self.import_path):
+            raise EnvironmentBackendError("import_path must be 'package.module:ClassName'")
+        if self.prerequisites is not None and not _IMPORT_PATH_RE.fullmatch(str(self.prerequisites)):
+            raise EnvironmentBackendError("prerequisites must be 'package.module:function'")
         for label, names in (
             ("environment_kwargs", self.environment_kwargs),
             ("required_environment_kwargs", self.required_environment_kwargs),
             ("reserved_environment_kwargs", self.reserved_environment_kwargs),
         ):
             if isinstance(names, str) or not all(isinstance(name, str) and name.isidentifier() for name in names):
-                raise EnvModePluginError(f"{label} must be a collection of Python keyword names")
+                raise EnvironmentBackendError(f"{label} must be a collection of Python keyword names")
         if missing := sorted(set(self.required_environment_kwargs) - set(self.environment_kwargs)):
-            raise EnvModePluginError("required_environment_kwargs must also be accepted: " + ", ".join(missing))
+            raise EnvironmentBackendError("required_environment_kwargs must also be accepted: " + ", ".join(missing))
         if isinstance(self.host_env_vars, str) or not all(
-            isinstance(name, str) and _PLUGIN_ENV_VAR_RE.fullmatch(name) for name in self.host_env_vars
+            isinstance(name, str) and _HOST_ENV_VAR_RE.fullmatch(name) for name in self.host_env_vars
         ):
-            raise EnvModePluginError("host_env_vars must be a collection of upper-case environment variable names")
+            raise EnvironmentBackendError("host_env_vars must be a collection of upper-case environment variable names")
         if missing := sorted(set(self.host_path_env_vars) - set(self.host_env_vars)):
-            raise EnvModePluginError("host_path_env_vars must also be host_env_vars: " + ", ".join(missing))
+            raise EnvironmentBackendError("host_path_env_vars must also be host_env_vars: " + ", ".join(missing))
         if missing := sorted(set(self.host_path_environment_kwargs) - set(self.environment_kwargs)):
-            raise EnvModePluginError(
+            raise EnvironmentBackendError(
                 "host_path_environment_kwargs must also be environment_kwargs: " + ", ".join(missing)
             )
         if not isinstance(self.agent_import_paths, Mapping) or not all(
-            isinstance(agent, str) and isinstance(path, str) and _PLUGIN_IMPORT_PATH_RE.fullmatch(path)
+            isinstance(agent, str) and isinstance(path, str) and _IMPORT_PATH_RE.fullmatch(path)
             for agent, path in self.agent_import_paths.items()
         ):
-            raise EnvModePluginError("agent_import_paths must map agent names to 'package.module:ClassName'")
+            raise EnvironmentBackendError("agent_import_paths must map agent names to 'package.module:ClassName'")
         object.__setattr__(self, "environment_kwargs", frozenset(self.environment_kwargs))
         object.__setattr__(self, "required_environment_kwargs", tuple(self.required_environment_kwargs))
         object.__setattr__(self, "reserved_environment_kwargs", frozenset(self.reserved_environment_kwargs))
@@ -328,22 +328,30 @@ class EnvModePlugin:
         object.__setattr__(self, "agent_import_paths", MappingProxyType(dict(self.agent_import_paths)))
 
 
-def _env_mode_plugins_disabled() -> bool:
-    return os.environ.get(DISABLE_ENV_MODE_PLUGINS_ENV, "").strip().lower() in {"1", "true", "yes"}
+def _custom_backends_disabled() -> bool:
+    return os.environ.get(DISABLE_CUSTOM_BACKENDS_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
 @lru_cache(maxsize=1)
-def _env_mode_plugin_entry_points() -> Mapping[str, tuple[EntryPoint, ...]]:
-    """Return installed plugin entry points by mode name, without importing them."""
-    selected: dict[str, list[EntryPoint]] = {}
-    for entry_point in entry_points(group=ENV_MODE_PLUGIN_GROUP):
+def _custom_backend_entry_points() -> Mapping[str, tuple[EntryPoint, ...]]:
+    """Return installed custom backend entry points by mode name, without importing them."""
+    selected: dict[str, dict[tuple[str | None, str | None, str], EntryPoint]] = {}
+    for entry_point in entry_points(group=ENV_MODE_ENTRY_POINT_GROUP):
         name = entry_point.name
-        # Built-in modes keep their reviewed behavior; a plugin can never replace one.
-        if name in HARBOR_ENV_MODES or not _PLUGIN_MODE_NAME_RE.fullmatch(name):
+        # Built-in modes keep their reviewed behavior; a custom backend can never replace one.
+        if name in HARBOR_ENV_MODES or not _BACKEND_NAME_RE.fullmatch(name):
             continue
-        if entry_point not in selected.setdefault(name, []):
-            selected[name].append(entry_point)
-    return MappingProxyType({name: tuple(points) for name, points in sorted(selected.items())})
+        # EntryPoint equality ignores the owning distribution. Key on it so two
+        # packages registering the same target still count as two claims, while
+        # one distribution seen twice on sys.path counts once.
+        dist = getattr(entry_point, "dist", None)
+        identity = (
+            dist.name.lower().replace("_", "-") if dist is not None else None,
+            dist.version if dist is not None else None,
+            entry_point.value,
+        )
+        selected.setdefault(name, {}).setdefault(identity, entry_point)
+    return MappingProxyType({name: tuple(points.values()) for name, points in sorted(selected.items())})
 
 
 def _entry_point_source(entry_point: EntryPoint) -> str:
@@ -351,59 +359,59 @@ def _entry_point_source(entry_point: EntryPoint) -> str:
     return f"{dist.name} {dist.version}" if dist is not None else entry_point.value
 
 
-def env_mode_plugin_names() -> tuple[str, ...]:
-    """Return the ``--env-mode`` names contributed by installed plugins."""
-    if _env_mode_plugins_disabled():
+def custom_backend_names() -> tuple[str, ...]:
+    """Return the ``--env-mode`` names contributed by installed custom execution backends."""
+    if _custom_backends_disabled():
         return ()
-    return tuple(_env_mode_plugin_entry_points())
+    return tuple(_custom_backend_entry_points())
 
 
 def all_env_modes() -> tuple[str, ...]:
-    """Return built-in modes followed by installed plugin modes."""
-    return (*HARBOR_ENVIRONMENTS, *env_mode_plugin_names())
+    """Return built-in modes followed by installed custom execution backends."""
+    return (*HARBOR_ENVIRONMENTS, *custom_backend_names())
 
 
 def is_env_mode(env_mode: str) -> bool:
-    """Return True for a built-in or installed plugin ``--env-mode``."""
-    return env_mode in HARBOR_ENV_MODES or env_mode in env_mode_plugin_names()
+    """Return True for a built-in or custom ``--env-mode``."""
+    return env_mode in HARBOR_ENV_MODES or env_mode in custom_backend_names()
 
 
-def load_env_mode_plugin(env_mode: str) -> EnvModePlugin | None:
-    """Load the plugin behind ``env_mode``; return None for built-in or unknown modes."""
-    if env_mode in HARBOR_ENV_MODES or env_mode not in env_mode_plugin_names():
+def load_custom_backend(env_mode: str) -> EnvironmentBackendSpec | None:
+    """Load the custom backend behind ``env_mode``; return None for built-in or unknown modes."""
+    if env_mode in HARBOR_ENV_MODES or env_mode not in custom_backend_names():
         return None
-    return _load_env_mode_plugin(env_mode)
+    return _load_custom_backend(env_mode)
 
 
 @cache
-def _load_env_mode_plugin(env_mode: str) -> EnvModePlugin:
-    claims = _env_mode_plugin_entry_points()[env_mode]
+def _load_custom_backend(env_mode: str) -> EnvironmentBackendSpec:
+    claims = _custom_backend_entry_points()[env_mode]
     if len(claims) > 1:
         # Install order would otherwise decide which backend runs.
-        raise EnvModePluginError(
-            f"Environment mode '{env_mode}' is registered by more than one package: "
+        raise EnvironmentBackendError(
+            f"Custom execution backend '{env_mode}' is registered by more than one package: "
             + ", ".join(sorted(_entry_point_source(point) for point in claims))
             + ". Uninstall all but one"
         )
     entry_point = claims[0]
     try:
         loaded: Any = entry_point.load()
-        plugin = loaded if isinstance(loaded, EnvModePlugin) else loaded() if callable(loaded) else loaded
-    except EnvModePluginError as exc:
-        raise EnvModePluginError(f"Environment mode '{env_mode}' plugin is invalid: {exc}") from None
+        backend = loaded if isinstance(loaded, EnvironmentBackendSpec) else loaded() if callable(loaded) else loaded
+    except EnvironmentBackendError as exc:
+        raise EnvironmentBackendError(f"Custom execution backend '{env_mode}' is invalid: {exc}") from None
     except Exception as exc:
-        raise EnvModePluginError(
-            f"Environment mode '{env_mode}' plugin {entry_point.value!r} could not be loaded: "
+        raise EnvironmentBackendError(
+            f"Custom execution backend '{env_mode}' ({entry_point.value!r}) could not be loaded: "
             f"{type(exc).__name__}: {exc}"
         ) from None
-    if not isinstance(plugin, EnvModePlugin):
-        raise EnvModePluginError(
-            f"Environment mode '{env_mode}' plugin {entry_point.value!r} must provide an EnvModePlugin"
+    if not isinstance(backend, EnvironmentBackendSpec):
+        raise EnvironmentBackendError(
+            f"Custom execution backend '{env_mode}' ({entry_point.value!r}) must provide an EnvironmentBackendSpec"
         )
-    return plugin
+    return backend
 
 
-def clear_env_mode_plugin_cache() -> None:
-    """Forget discovered plugins, for tests and long-lived processes that install packages."""
-    _env_mode_plugin_entry_points.cache_clear()
-    _load_env_mode_plugin.cache_clear()
+def clear_custom_backend_cache() -> None:
+    """Forget discovered custom backends, for tests and long-lived processes that install packages."""
+    _custom_backend_entry_points.cache_clear()
+    _load_custom_backend.cache_clear()
