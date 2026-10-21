@@ -4,6 +4,13 @@ All notable changes to SkillEvaluator are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Tier 3 on Windows passes `PROGRAMFILES`, `PROGRAMW6432` and `PROGRAMDATA` to
+  Harbor, so Docker Desktop finds its `compose` plugin, and passes
+  `PYTHONUTF8` and `PYTHONIOENCODING` so Python UTF-8 mode reaches Harbor on
+  non-UTF-8 locales.
+
 ## 0.6.0 - 2026-10-20
 
 ### Added
